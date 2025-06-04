@@ -1,0 +1,287 @@
+# =============================================================================
+# CLOUDSQL NETWORKING - modules/cloudsql/networking.tf
+# Private IP allocation and VPC peering for CloudSQL
+# =============================================================================
+
+# =============================================================================
+# PRIVATE IP RANGE ALLOCATION
+# =============================================================================
+
+# Allocate private IP range for CloudSQL
+resource "google_compute_global_address" "private_ip_range" {
+  name          = "${var.instance_name}-private-ip-range"
+  purpose       = "VPC_PEERING"
+  address_type  = "INTERNAL"
+  prefix_length = var.private_ip_prefix_length
+  network       = var.network_id
+  project       = var.project_id
+
+  description = "Private IP range for CloudSQL instance ${var.instance_name}"
+
+  # Add labels for tracking
+  labels = merge(
+    var.labels,
+    {
+      environment   = var.environment
+      purpose       = "cloudsql-private-ip"
+      instance-name = var.instance_name
+    }
+  )
+}
+
+# =============================================================================
+# VPC PEERING CONNECTION
+# =============================================================================
+
+# Create VPC peering connection for private services access
+resource "google_service_networking_connection" "private_vpc_connection" {
+  network                 = var.network_id
+  service                 = "servicenetworking.googleapis.com"
+  reserved_peering_ranges = [google_compute_global_address.private_ip_range.name]
+
+  # Ensure proper deletion order
+  deletion_policy = var.deletion_policy
+
+  # Timeouts for long-running operations
+  timeouts {
+    create = "10m"
+    update = "10m"
+    delete = "10m"
+  }
+
+  # Ensure this is created before CloudSQL instance
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+# =============================================================================
+# ADDITIONAL PRIVATE IP RANGES (for multiple instances)
+# =============================================================================
+
+# Additional private IP ranges for scaling
+resource "google_compute_global_address" "additional_private_ip_ranges" {
+  for_each = var.additional_private_ip_ranges
+
+  name          = "${var.instance_name}-${each.key}-private-ip-range"
+  purpose       = "VPC_PEERING"
+  address_type  = "INTERNAL"
+  prefix_length = each.value.prefix_length
+  network       = var.network_id
+  project       = var.project_id
+
+  description = "Additional private IP range for ${each.key}"
+
+  labels = merge(
+    var.labels,
+    {
+      environment   = var.environment
+      purpose       = "cloudsql-additional-ip"
+      range-name    = each.key
+      instance-name = var.instance_name
+    }
+  )
+}
+
+# =============================================================================
+# FIREWALL RULES FOR CLOUDSQL ACCESS
+# =============================================================================
+
+# Firewall rule to allow CloudSQL access from GKE nodes
+resource "google_compute_firewall" "cloudsql_access" {
+  count = var.create_firewall_rules ? 1 : 0
+
+  name    = "${var.instance_name}-cloudsql-access"
+  network = var.network_name
+  project = var.project_id
+
+  description = "Allow access to CloudSQL from authorized sources"
+
+  # Allow PostgreSQL port
+  allow {
+    protocol = "tcp"
+    ports    = ["5432"]
+  }
+
+  # Source ranges (GKE pods, private subnets, etc.)
+  source_ranges = var.allowed_source_ranges
+
+  # Target tags (if CloudSQL proxy is used)
+  target_tags = var.target_tags
+
+  direction = "INGRESS"
+  priority  = 1000
+
+  # Log connections for monitoring
+  log_config {
+    metadata = "INCLUDE_ALL_METADATA"
+  }
+}
+
+# =============================================================================
+# DNS CONFIGURATION (for easier access)
+# =============================================================================
+
+# Private DNS zone for CloudSQL (optional)
+resource "google_dns_managed_zone" "cloudsql_private_zone" {
+  count = var.create_private_dns_zone ? 1 : 0
+
+  name        = "${var.instance_name}-private-zone"
+  dns_name    = "${var.dns_zone_name}."
+  description = "Private DNS zone for CloudSQL instance ${var.instance_name}"
+
+  visibility = "private"
+
+  private_visibility_config {
+    networks {
+      network_url = var.network_self_link
+    }
+  }
+
+  labels = merge(
+    var.labels,
+    {
+      environment   = var.environment
+      purpose       = "cloudsql-dns"
+      instance-name = var.instance_name
+    }
+  )
+}
+
+# DNS record for CloudSQL instance
+resource "google_dns_record_set" "cloudsql_record" {
+  count = var.create_private_dns_zone ? 1 : 0
+
+  name = "db.${google_dns_managed_zone.cloudsql_private_zone[0].dns_name}"
+  type = "A"
+  ttl  = 300
+
+  managed_zone = google_dns_managed_zone.cloudsql_private_zone[0].name
+
+  # Point to CloudSQL private IP
+  rrdatas = [google_sql_database_instance.postgres.private_ip_address]
+
+  depends_on = [
+    google_sql_database_instance.postgres,
+    google_dns_managed_zone.cloudsql_private_zone
+  ]
+}
+
+# =============================================================================
+# NETWORK POLICY FOR CLOUDSQL (if using GKE)
+# =============================================================================
+
+# Network policy to control CloudSQL access from pods
+resource "kubernetes_network_policy" "cloudsql_access" {
+  count = var.create_k8s_network_policy ? 1 : 0
+
+  metadata {
+    name      = "${var.instance_name}-cloudsql-access"
+    namespace = var.k8s_namespace
+
+    labels = {
+      app         = "cloudsql-access"
+      environment = var.environment
+      instance    = var.instance_name
+    }
+  }
+
+  spec {
+    pod_selector {
+      match_labels = var.k8s_pod_selector
+    }
+
+    policy_types = ["Egress"]
+
+    egress {
+      # Allow access to CloudSQL
+      to {
+        ip_block {
+          cidr = "${google_sql_database_instance.postgres.private_ip_address}/32"
+        }
+      }
+
+      ports {
+        protocol = "TCP"
+        port     = "5432"
+      }
+    }
+
+    # Allow DNS resolution
+    egress {
+      to {
+        namespace_selector {}
+      }
+
+      ports {
+        protocol = "UDP"
+        port     = "53"
+      }
+    }
+  }
+
+  depends_on = [google_sql_database_instance.postgres]
+}
+
+# =============================================================================
+# MONITORING AND ALERTING SETUP
+# =============================================================================
+
+# Uptime check for CloudSQL instance
+resource "google_monitoring_uptime_check_config" "cloudsql_uptime" {
+  count = var.enable_uptime_checks ? 1 : 0
+
+  display_name = "${var.instance_name} CloudSQL Uptime Check"
+  timeout      = "10s"
+  period       = "60s"
+
+  tcp_check {
+    port = 5432
+  }
+
+  monitored_resource {
+    type = "gce_instance"
+    labels = {
+      instance_id = google_sql_database_instance.postgres.server_ca_cert[0].sha1_fingerprint
+      zone        = var.preferred_zone
+    }
+  }
+
+  content_matchers {
+    content = "PostgreSQL"
+    matcher = "CONTAINS_STRING"
+  }
+
+  checker_type = "STATIC_IP_CHECKERS"
+}
+
+# Alert policy for CloudSQL downtime
+resource "google_monitoring_alert_policy" "cloudsql_down" {
+  count = var.enable_alerting ? 1 : 0
+
+  display_name = "${var.instance_name} CloudSQL Down Alert"
+  combiner     = "OR"
+  enabled      = true
+
+  conditions {
+    display_name = "CloudSQL instance down"
+
+    condition_threshold {
+      filter          = "resource.type=\"cloudsql_database\" resource.labels.database_id=\"${var.project_id}:${google_sql_database_instance.postgres.name}\""
+      duration        = "300s"
+      comparison      = "COMPARISON_EQUAL"
+      threshold_value = 0
+
+      aggregations {
+        alignment_period   = "60s"
+        per_series_aligner = "ALIGN_RATE"
+      }
+    }
+  }
+
+  notification_channels = var.notification_channels
+
+  alert_strategy {
+    auto_close = "1800s"
+  }
+}

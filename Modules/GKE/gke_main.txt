@@ -1,0 +1,338 @@
+# =============================================================================
+# GKE MODULE - modules/gke/main.tf
+# Google Kubernetes Engine cluster with environment-specific configurations
+# =============================================================================
+
+# Data source to get available GKE versions
+data "google_container_engine_versions" "gke_version" {
+  location = var.region
+  version_prefix = var.kubernetes_version
+}
+
+# Main GKE Cluster
+resource "google_container_cluster" "primary" {
+  name     = var.cluster_name
+  location = var.region
+
+  # Configure cluster location type based on environment
+  # Dev: Single zone for cost savings
+  # Prod: Regional for high availability
+  node_locations = var.environment == "prod" ? var.node_zones : [var.node_zones[0]]
+
+  # Remove default node pool immediately
+  remove_default_node_pool = true
+  initial_node_count       = 1
+
+  # Network configuration (uses VPC module outputs)
+  network    = var.network
+  subnetwork = var.subnetwork
+
+  # Enable VPC-native networking
+  ip_allocation_policy {
+    cluster_secondary_range_name  = var.pod_range_name
+    services_secondary_range_name = var.service_range_name
+  }
+
+  # Master configuration
+  private_cluster_config {
+    enable_private_nodes    = var.enable_private_nodes
+    enable_private_endpoint = var.enable_private_endpoint
+    master_ipv4_cidr_block  = var.master_ipv4_cidr_block
+  }
+
+  # Master authorized networks (who can access the cluster)
+  master_authorized_networks_config {
+    dynamic "cidr_blocks" {
+      for_each = var.master_authorized_networks
+      content {
+        cidr_block   = cidr_blocks.value.cidr_block
+        display_name = cidr_blocks.value.display_name
+      }
+    }
+  }
+
+  # Cluster addons configuration
+  addons_config {
+    # HTTP Load Balancing (for Ingress)
+    http_load_balancing {
+      disabled = false
+    }
+
+    # Horizontal Pod Autoscaling
+    horizontal_pod_autoscaling {
+      disabled = false
+    }
+
+    # Network Policy (Calico)
+    network_policy_config {
+      disabled = false
+    }
+
+    # DNS Cache for better performance
+    dns_cache_config {
+      enabled = var.enable_dns_cache
+    }
+
+    # GCE Persistent Disk CSI driver
+    gce_persistent_disk_csi_driver_config {
+      enabled = true
+    }
+  }
+
+  # Enable network policy enforcement
+  network_policy {
+    enabled  = true
+    provider = "CALICO"
+  }
+
+  # Workload Identity for secure pod-to-GCP service authentication
+  workload_identity_config {
+    workload_pool = "${var.project_id}.svc.id.goog"
+  }
+
+  # Enable Shielded GKE nodes for security
+  enable_shielded_nodes = true
+
+  # Database encryption (only for prod)
+  dynamic "database_encryption" {
+    for_each = var.environment == "prod" ? [1] : []
+    content {
+      state    = "ENCRYPTED"
+      key_name = var.database_encryption_key
+    }
+  }
+
+  # Resource labels for cost tracking and management
+  resource_labels = merge(
+    var.labels,
+    {
+      environment    = var.environment
+      cluster-name   = var.cluster_name
+      managed-by     = "terraform"
+      cost-center    = var.environment == "prod" ? "production" : "development"
+    }
+  )
+
+  # Maintenance policy (prod has scheduled maintenance windows)
+  dynamic "maintenance_policy" {
+    for_each = var.environment == "prod" ? [1] : []
+    content {
+      recurring_window {
+        start_time = var.maintenance_start_time
+        end_time   = var.maintenance_end_time
+        recurrence = var.maintenance_recurrence
+      }
+    }
+  }
+
+  # Monitoring and logging configuration
+  logging_service    = "logging.googleapis.com/kubernetes"
+  monitoring_service = "monitoring.googleapis.com/kubernetes"
+
+  # Enable monitoring components
+  monitoring_config {
+    enable_components = [
+      "SYSTEM_COMPONENTS",
+      "WORKLOADS"
+    ]
+  }
+
+  # Logging configuration
+  logging_config {
+    enable_components = [
+      "SYSTEM_COMPONENTS",
+      "WORKLOADS",
+      "API_SERVER"
+    ]
+  }
+
+  # Binary authorization for enhanced security (prod only)
+  dynamic "binary_authorization" {
+    for_each = var.environment == "prod" ? [1] : []
+    content {
+      evaluation_mode = "PROJECT_SINGLETON_POLICY_ENFORCE"
+    }
+  }
+
+  # Timeouts for cluster operations
+  timeouts {
+    create = "45m"
+    update = "45m"
+    delete = "45m"
+  }
+
+  # Prevent accidental deletion in production
+  lifecycle {
+    prevent_destroy = var.environment == "prod" ? true : false
+  }
+
+  # Depends on service account creation
+  depends_on = [
+    google_service_account.gke_sa,
+    google_project_iam_member.gke_sa_roles
+  ]
+}
+
+# =============================================================================
+# NODE POOL CONFIGURATION
+# =============================================================================
+
+# Primary node pool with environment-specific configuration
+resource "google_container_node_pool" "primary_nodes" {
+  name     = "${var.cluster_name}-primary-pool"
+  location = var.region
+  cluster  = google_container_cluster.primary.name
+
+  # Node count configuration (different for dev vs prod)
+  node_count = var.environment == "dev" ? var.dev_node_count : null
+
+  # Autoscaling (enabled for prod, optional for dev)
+  dynamic "autoscaling" {
+    for_each = var.enable_autoscaling ? [1] : []
+    content {
+      min_node_count = var.min_node_count
+      max_node_count = var.max_node_count
+    }
+  }
+
+  # Node configuration
+  node_config {
+    # Machine type (environment-specific)
+    machine_type = var.machine_type
+
+    # Disk configuration
+    disk_size_gb = var.disk_size_gb
+    disk_type    = var.disk_type
+
+    # Use spot instances for dev to save costs
+    spot = var.environment == "dev" ? var.enable_spot_instances : false
+
+    # Service account
+    service_account = google_service_account.gke_sa.email
+    oauth_scopes = [
+      "https://www.googleapis.com/auth/cloud-platform"
+    ]
+
+    # Security configurations
+    shielded_instance_config {
+      enable_secure_boot          = true
+      enable_integrity_monitoring = true
+    }
+
+    # Workload metadata configuration
+    workload_metadata_config {
+      mode = "GKE_METADATA"
+    }
+
+    # Network tags for firewall rules
+    tags = concat(
+      ["gke-node", var.cluster_name],
+      var.network_tags
+    )
+
+    # Node labels
+    labels = merge(
+      var.node_labels,
+      {
+        environment = var.environment
+        node-pool   = "primary"
+        cluster     = var.cluster_name
+      }
+    )
+
+    # Taints for node specialization (if needed)
+    dynamic "taint" {
+      for_each = var.node_taints
+      content {
+        key    = taint.value.key
+        value  = taint.value.value
+        effect = taint.value.effect
+      }
+    }
+
+    # Metadata
+    metadata = {
+      disable-legacy-endpoints = "true"
+      # Improve security by disabling legacy metadata endpoints
+    }
+  }
+
+  # Node pool management
+  management {
+    auto_repair  = var.auto_repair
+    auto_upgrade = var.auto_upgrade
+  }
+
+  # Upgrade settings (control upgrade behavior)
+  upgrade_settings {
+    max_surge       = var.max_surge
+    max_unavailable = var.max_unavailable
+  }
+
+  # Timeouts
+  timeouts {
+    create = "30m"
+    update = "30m"
+    delete = "30m"
+  }
+
+  # Lifecycle rules
+  lifecycle {
+    ignore_changes = [
+      # Ignore changes to node count if autoscaling is enabled
+      node_count,
+    ]
+  }
+}
+
+# =============================================================================
+# ADDITIONAL NODE POOLS (for prod environments)
+# =============================================================================
+
+# High-memory node pool for data-intensive workloads (prod only)
+resource "google_container_node_pool" "high_memory_pool" {
+  count = var.environment == "prod" && var.enable_high_memory_pool ? 1 : 0
+
+  name     = "${var.cluster_name}-high-memory-pool"
+  location = var.region
+  cluster  = google_container_cluster.primary.name
+
+  # Minimal initial size, can scale up
+  initial_node_count = 0
+
+  autoscaling {
+    min_node_count = 0
+    max_node_count = var.high_memory_max_nodes
+  }
+
+  node_config {
+    machine_type = var.high_memory_machine_type
+    disk_size_gb = var.disk_size_gb * 2  # Larger disk for data workloads
+    disk_type    = "pd-ssd"              # SSD for better performance
+
+    service_account = google_service_account.gke_sa.email
+    oauth_scopes = [
+      "https://www.googleapis.com/auth/cloud-platform"
+    ]
+
+    labels = {
+      environment = var.environment
+      node-pool   = "high-memory"
+      workload    = "data-intensive"
+    }
+
+    # Taint to ensure only specific workloads are scheduled here
+    taint {
+      key    = "workload"
+      value  = "high-memory"
+      effect = "NO_SCHEDULE"
+    }
+
+    tags = ["gke-node", var.cluster_name, "high-memory"]
+  }
+
+  management {
+    auto_repair  = true
+    auto_upgrade = true
+  }
+}

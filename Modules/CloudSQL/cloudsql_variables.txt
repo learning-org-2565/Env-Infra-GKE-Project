@@ -1,0 +1,678 @@
+# =============================================================================
+# CLOUDSQL MODULE VARIABLES - modules/cloudsql/variables.tf
+# Input variables for environment-specific CloudSQL configuration
+# =============================================================================
+
+# =============================================================================
+# REQUIRED VARIABLES (must be provided by calling environment)
+# =============================================================================
+
+variable "project_id" {
+  description = "The GCP project ID where the CloudSQL instance will be created"
+  type        = string
+  
+  validation {
+    condition     = length(var.project_id) > 0
+    error_message = "Project ID cannot be empty."
+  }
+}
+
+variable "region" {
+  description = "The GCP region where the CloudSQL instance will be created"
+  type        = string
+  
+  validation {
+    condition     = can(regex("^[a-z]+-[a-z]+[0-9]$", var.region))
+    error_message = "Region must be a valid GCP region format."
+  }
+}
+
+variable "environment" {
+  description = "Environment name (dev, staging, prod)"
+  type        = string
+  
+  validation {
+    condition     = contains(["dev", "staging", "prod"], var.environment)
+    error_message = "Environment must be one of: dev, staging, prod."
+  }
+}
+
+# Network configuration (from VPC module)
+variable "network_id" {
+  description = "The VPC network ID"
+  type        = string
+}
+
+variable "network_name" {
+  description = "The VPC network name"
+  type        = string
+}
+
+variable "network_self_link" {
+  description = "The VPC network self-link"
+  type        = string
+}
+
+# =============================================================================
+# INSTANCE CONFIGURATION
+# =============================================================================
+
+variable "instance_name" {
+  description = "Name of the CloudSQL instance"
+  type        = string
+  
+  validation {
+    condition     = can(regex("^[a-z][-a-z0-9]*[a-z0-9]$", var.instance_name))
+    error_message = "Instance name must be lowercase letters, numbers, and hyphens only."
+  }
+}
+
+variable "database_version" {
+  description = "PostgreSQL version"
+  type        = string
+  default     = "POSTGRES_15"
+  
+  validation {
+    condition = contains([
+      "POSTGRES_13", "POSTGRES_14", "POSTGRES_15", "POSTGRES_16"
+    ], var.database_version)
+    error_message = "Database version must be a supported PostgreSQL version."
+  }
+}
+
+variable "tier" {
+  description = "Machine type for the CloudSQL instance"
+  type        = string
+  default     = "db-f1-micro"
+  
+  validation {
+    condition = can(regex("^db-(f1-micro|g1-small|n1-(standard|highmem|highcpu)-[0-9]+|custom-[0-9]+-[0-9]+)$", var.tier))
+    error_message = "Tier must be a valid CloudSQL machine type."
+  }
+}
+
+variable "availability_type" {
+  description = "Availability type (ZONAL or REGIONAL)"
+  type        = string
+  default     = "ZONAL"
+  
+  validation {
+    condition     = contains(["ZONAL", "REGIONAL"], var.availability_type)
+    error_message = "Availability type must be either ZONAL or REGIONAL."
+  }
+}
+
+variable "deletion_protection" {
+  description = "Enable deletion protection"
+  type        = bool
+  default     = false
+}
+
+# =============================================================================
+# DISK CONFIGURATION
+# =============================================================================
+
+variable "disk_size_gb" {
+  description = "Size of the disk in GB"
+  type        = number
+  default     = 10
+  
+  validation {
+    condition     = var.disk_size_gb >= 10 && var.disk_size_gb <= 30720
+    error_message = "Disk size must be between 10 and 30720 GB."
+  }
+}
+
+variable "disk_type" {
+  description = "Type of disk (PD_SSD or PD_HDD)"
+  type        = string
+  default     = "PD_SSD"
+  
+  validation {
+    condition     = contains(["PD_SSD", "PD_HDD"], var.disk_type)
+    error_message = "Disk type must be either PD_SSD or PD_HDD."
+  }
+}
+
+variable "disk_autoresize" {
+  description = "Enable automatic storage increase"
+  type        = bool
+  default     = true
+}
+
+variable "disk_autoresize_limit" {
+  description = "Maximum size that storage can be automatically increased to (GB)"
+  type        = number
+  default     = 100
+  
+  validation {
+    condition     = var.disk_autoresize_limit >= var.disk_size_gb
+    error_message = "Autoresize limit must be greater than or equal to initial disk size."
+  }
+}
+
+# =============================================================================
+# NETWORKING CONFIGURATION
+# =============================================================================
+
+variable "enable_public_ip" {
+  description = "Enable public IP for the instance (not recommended for production)"
+  type        = bool
+  default     = false
+}
+
+variable "require_ssl" {
+  description = "Require SSL connections to the database"
+  type        = bool
+  default     = true
+}
+
+variable "authorized_networks" {
+  description = "List of authorized networks for public IP access"
+  type = list(object({
+    name  = string
+    value = string
+  }))
+  default = []
+}
+
+variable "private_ip_prefix_length" {
+  description = "Prefix length for the private IP range"
+  type        = number
+  default     = 16
+  
+  validation {
+    condition     = var.private_ip_prefix_length >= 16 && var.private_ip_prefix_length <= 24
+    error_message = "Private IP prefix length must be between 16 and 24."
+  }
+}
+
+variable "additional_private_ip_ranges" {
+  description = "Additional private IP ranges for scaling"
+  type = map(object({
+    prefix_length = number
+  }))
+  default = {}
+}
+
+variable "deletion_policy" {
+  description = "Deletion policy for the VPC connection"
+  type        = string
+  default     = "DELETE"
+  
+  validation {
+    condition     = contains(["DELETE", "ABANDON"], var.deletion_policy)
+    error_message = "Deletion policy must be either DELETE or ABANDON."
+  }
+}
+
+# =============================================================================
+# BACKUP CONFIGURATION (Environment-specific)
+# =============================================================================
+
+variable "backup_enabled" {
+  description = "Enable automated backups"
+  type        = bool
+  default     = true
+}
+
+variable "backup_start_time" {
+  description = "Start time for automated backups (HH:MM format)"
+  type        = string
+  default     = "02:00"
+  
+  validation {
+    condition     = can(regex("^[0-2][0-9]:[0-5][0-9]$", var.backup_start_time))
+    error_message = "Backup start time must be in HH:MM format."
+  }
+}
+
+variable "backup_location" {
+  description = "Location for storing backups"
+  type        = string
+  default     = null
+}
+
+variable "point_in_time_recovery_enabled" {
+  description = "Enable point-in-time recovery"
+  type        = bool
+  default     = true
+}
+
+variable "transaction_log_retention_days" {
+  description = "Number of days to retain transaction logs"
+  type        = number
+  default     = 7
+  
+  validation {
+    condition     = var.transaction_log_retention_days >= 1 && var.transaction_log_retention_days <= 7
+    error_message = "Transaction log retention must be between 1 and 7 days."
+  }
+}
+
+variable "backup_retained_backups" {
+  description = "Number of automated backups to retain"
+  type        = number
+  default     = 7
+  
+  validation {
+    condition     = var.backup_retained_backups >= 1 && var.backup_retained_backups <= 365
+    error_message = "Backup retention must be between 1 and 365 backups."
+  }
+}
+
+# =============================================================================
+# MAINTENANCE WINDOW (Production)
+# =============================================================================
+
+variable "maintenance_window_day" {
+  description = "Day of week for maintenance (1=Monday, 7=Sunday)"
+  type        = number
+  default     = 7
+  
+  validation {
+    condition     = var.maintenance_window_day >= 1 && var.maintenance_window_day <= 7
+    error_message = "Maintenance window day must be between 1 (Monday) and 7 (Sunday)."
+  }
+}
+
+variable "maintenance_window_hour" {
+  description = "Hour of day for maintenance (0-23)"
+  type        = number
+  default     = 3
+  
+  validation {
+    condition     = var.maintenance_window_hour >= 0 && var.maintenance_window_hour <= 23
+    error_message = "Maintenance window hour must be between 0 and 23."
+  }
+}
+
+variable "maintenance_window_update_track" {
+  description = "Update track for maintenance (stable or canary)"
+  type        = string
+  default     = "stable"
+  
+  validation {
+    condition     = contains(["stable", "canary"], var.maintenance_window_update_track)
+    error_message = "Update track must be either stable or canary."
+  }
+}
+
+# =============================================================================
+# DATABASE AND USER CONFIGURATION
+# =============================================================================
+
+variable "database_name" {
+  description = "Name of the main database"
+  type        = string
+  default     = "app_database"
+  
+  validation {
+    condition     = can(regex("^[a-zA-Z][a-zA-Z0-9_]*$", var.database_name))
+    error_message = "Database name must start with a letter and contain only letters, numbers, and underscores."
+  }
+}
+
+variable "database_charset" {
+  description = "Character set for the database"
+  type        = string
+  default     = "UTF8"
+}
+
+variable "database_collation" {
+  description = "Collation for the database"
+  type        = string
+  default     = "en_US.UTF8"
+}
+
+variable "additional_databases" {
+  description = "List of additional databases to create"
+  type        = list(string)
+  default     = []
+}
+
+variable "app_user_name" {
+  description = "Name of the application database user"
+  type        = string
+  default     = "app_user"
+  
+  validation {
+    condition     = can(regex("^[a-zA-Z][a-zA-Z0-9_]*$", var.app_user_name))
+    error_message = "App user name must start with a letter and contain only letters, numbers, and underscores."
+  }
+}
+
+variable "restrict_postgres_user" {
+  description = "Restrict postgres user to specific hosts"
+  type        = bool
+  default     = true
+}
+
+variable "additional_users" {
+  description = "Additional database users to create"
+  type = map(object({
+    password = string
+    type     = string
+    host     = string
+  }))
+  default = {}
+}
+
+# =============================================================================
+# PERFORMANCE AND MONITORING
+# =============================================================================
+
+variable "database_flags" {
+  description = "Database flags for performance tuning"
+  type = list(object({
+    name  = string
+    value = string
+  }))
+  default = []
+}
+
+variable "query_insights_enabled" {
+  description = "Enable query insights for monitoring"
+  type        = bool
+  default     = true
+}
+
+variable "query_string_length" {
+  description = "Maximum query string length for insights"
+  type        = number
+  default     = 1024
+}
+
+variable "record_application_tags" {
+  description = "Record application tags in query insights"
+  type        = bool
+  default     = true
+}
+
+variable "record_client_address" {
+  description = "Record client address in query insights"
+  type        = bool
+  default     = true
+}
+
+variable "connector_enforcement" {
+  description = "Connector enforcement mode"
+  type        = string
+  default     = "NOT_REQUIRED"
+  
+  validation {
+    condition     = contains(["NOT_REQUIRED", "REQUIRED"], var.connector_enforcement)
+    error_message = "Connector enforcement must be either NOT_REQUIRED or REQUIRED."
+  }
+}
+
+# =============================================================================
+# LOCATION PREFERENCES
+# =============================================================================
+
+variable "preferred_zone" {
+  description = "Preferred zone for the instance"
+  type        = string
+  default     = null
+}
+
+variable "secondary_zone" {
+  description = "Secondary zone for high availability"
+  type        = string
+  default     = null
+}
+
+variable "follow_gae_application" {
+  description = "Follow GAE application for location"
+  type        = string
+  default     = null
+}
+
+# =============================================================================
+# READ REPLICA CONFIGURATION (Production)
+# =============================================================================
+
+variable "enable_read_replica" {
+  description = "Enable read replica for production"
+  type        = bool
+  default     = false
+}
+
+variable "replica_region" {
+  description = "Region for read replica (defaults to main region)"
+  type        = string
+  default     = null
+}
+
+variable "replica_tier" {
+  description = "Machine type for read replica (defaults to main tier)"
+  type        = string
+  default     = null
+}
+
+variable "replica_failover_target" {
+  description = "Enable failover target for read replica"
+  type        = bool
+  default     = false
+}
+
+# =============================================================================
+# SSL CONFIGURATION
+# =============================================================================
+
+variable "create_ssl_cert" {
+  description = "Create SSL client certificate"
+  type        = bool
+  default     = false
+}
+
+variable "create_app_ssl_cert" {
+  description = "Create SSL certificate for application"
+  type        = bool
+  default     = false
+}
+
+# =============================================================================
+# SECURITY FEATURES (Production)
+# =============================================================================
+
+variable "enable_password_rotation" {
+  description = "Enable automatic password rotation"
+  type        = bool
+  default     = false
+}
+
+variable "password_rotation_days" {
+  description = "Number of days between password rotations"
+  type        = number
+  default     = 90
+}
+
+variable "enable_iam_auth" {
+  description = "Enable IAM database authentication"
+  type        = bool
+  default     = false
+}
+
+variable "iam_service_account_email" {
+  description = "Service account email for IAM database authentication"
+  type        = string
+  default     = null
+}
+
+variable "iam_users" {
+  description = "IAM users for database access"
+  type = map(object({
+    email           = string
+    deletion_policy = string
+  }))
+  default = {}
+}
+
+variable "enable_backup_encryption" {
+  description = "Enable backup encryption with customer-managed keys"
+  type        = bool
+  default     = false
+}
+
+variable "key_rotation_period" {
+  description = "Key rotation period for encryption keys"
+  type        = string
+  default     = "2592000s" # 30 days
+}
+
+variable "store_passwords_in_secret_manager" {
+  description = "Store database passwords in Secret Manager"
+  type        = bool
+  default     = true
+}
+
+# =============================================================================
+# NETWORKING FEATURES
+# =============================================================================
+
+variable "create_firewall_rules" {
+  description = "Create firewall rules for CloudSQL access"
+  type        = bool
+  default     = true
+}
+
+variable "allowed_source_ranges" {
+  description = "CIDR ranges allowed to access CloudSQL"
+  type        = list(string)
+  default     = ["10.0.0.0/8"]
+}
+
+variable "target_tags" {
+  description = "Network tags for firewall rule targets"
+  type        = list(string)
+  default     = ["cloudsql-proxy"]
+}
+
+variable "create_private_dns_zone" {
+  description = "Create private DNS zone for CloudSQL"
+  type        = bool
+  default     = false
+}
+
+variable "dns_zone_name" {
+  description = "DNS zone name for private zone"
+  type        = string
+  default     = "cloudsql.local"
+}
+
+# =============================================================================
+# KUBERNETES INTEGRATION
+# =============================================================================
+
+variable "create_k8s_network_policy" {
+  description = "Create Kubernetes network policy for CloudSQL access"
+  type        = bool
+  default     = false
+}
+
+variable "k8s_namespace" {
+  description = "Kubernetes namespace for network policy"
+  type        = string
+  default     = "default"
+}
+
+variable "k8s_pod_selector" {
+  description = "Pod selector for Kubernetes network policy"
+  type        = map(string)
+  default = {
+    app = "backend"
+  }
+}
+
+# =============================================================================
+# MONITORING AND ALERTING
+# =============================================================================
+
+variable "enable_uptime_checks" {
+  description = "Enable uptime checks for CloudSQL"
+  type        = bool
+  default     = false
+}
+
+variable "enable_alerting" {
+  description = "Enable alerting for CloudSQL"
+  type        = bool
+  default     = false
+}
+
+variable "notification_channels" {
+  description = "Notification channels for alerts"
+  type        = list(string)
+  default     = []
+}
+
+variable "enable_audit_logs" {
+  description = "Enable audit logging"
+  type        = bool
+  default     = false
+}
+
+variable "enable_audit_logging" {
+  description = "Enable audit log sink"
+  type        = bool
+  default     = false
+}
+
+variable "audit_log_bucket" {
+  description = "Storage bucket for audit logs"
+  type        = string
+  default     = null
+}
+
+# =============================================================================
+# APPLICATION ROLE CONFIGURATION
+# =============================================================================
+
+variable "create_app_role" {
+  description = "Create application-specific database role"
+  type        = bool
+  default     = false
+}
+
+variable "app_role_name" {
+  description = "Name of the application role"
+  type        = string
+  default     = "app_role"
+}
+
+variable "app_role_createdb" {
+  description = "Allow application role to create databases"
+  type        = bool
+  default     = false
+}
+
+variable "app_role_connection_limit" {
+  description = "Connection limit for application role"
+  type        = number
+  default     = 20
+}
+
+variable "app_user_privileges" {
+  description = "Privileges to grant to application user"
+  type        = list(string)
+  default     = ["CONNECT", "CREATE"]
+}
+
+variable "database_iam_bindings" {
+  description = "IAM bindings for database access"
+  type        = map(list(string))
+  default     = {}
+}
+
+# =============================================================================
+# LABELS AND METADATA
+# =============================================================================
+
+variable "labels" {
+  description = "Labels to apply to resources"
+  type        = map(string)
+  default = {
+    managed-by = "terraform"
+  }
+}

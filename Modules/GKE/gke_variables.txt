@@ -1,0 +1,390 @@
+# =============================================================================
+# GKE MODULE VARIABLES - modules/gke/variables.tf
+# Input variables for environment-specific GKE configuration
+# =============================================================================
+
+# =============================================================================
+# REQUIRED VARIABLES (must be provided by calling environment)
+# =============================================================================
+
+variable "project_id" {
+  description = "The GCP project ID where the GKE cluster will be created"
+  type        = string
+  
+  validation {
+    condition     = length(var.project_id) > 0
+    error_message = "Project ID cannot be empty."
+  }
+}
+
+variable "region" {
+  description = "The GCP region where the cluster will be created"
+  type        = string
+  
+  validation {
+    condition     = can(regex("^[a-z]+-[a-z]+[0-9]$", var.region))
+    error_message = "Region must be a valid GCP region format."
+  }
+}
+
+variable "environment" {
+  description = "Environment name (dev, staging, prod)"
+  type        = string
+  
+  validation {
+    condition     = contains(["dev", "staging", "prod"], var.environment)
+    error_message = "Environment must be one of: dev, staging, prod."
+  }
+}
+
+# Network configuration (from VPC module)
+variable "network" {
+  description = "The VPC network self-link"
+  type        = string
+}
+
+variable "subnetwork" {
+  description = "The VPC subnetwork self-link"
+  type        = string
+}
+
+variable "pod_range_name" {
+  description = "The name of the secondary range for pods"
+  type        = string
+}
+
+variable "service_range_name" {
+  description = "The name of the secondary range for services"
+  type        = string
+}
+
+# =============================================================================
+# CLUSTER CONFIGURATION
+# =============================================================================
+
+variable "cluster_name" {
+  description = "Name of the GKE cluster"
+  type        = string
+  
+  validation {
+    condition     = can(regex("^[a-z][-a-z0-9]*[a-z0-9]$", var.cluster_name))
+    error_message = "Cluster name must be lowercase letters, numbers, and hyphens only."
+  }
+}
+
+variable "kubernetes_version" {
+  description = "Kubernetes version prefix (e.g., '1.27')"
+  type        = string
+  default     = "1.27"
+}
+
+variable "node_zones" {
+  description = "List of zones for node placement"
+  type        = list(string)
+  default     = ["us-central1-a", "us-central1-b", "us-central1-c"]
+  
+  validation {
+    condition     = length(var.node_zones) >= 1
+    error_message = "At least one zone must be specified."
+  }
+}
+
+# =============================================================================
+# NODE POOL CONFIGURATION (Environment-specific)
+# =============================================================================
+
+variable "machine_type" {
+  description = "Machine type for GKE nodes"
+  type        = string
+  default     = "e2-medium"
+  
+  validation {
+    condition = contains([
+      "e2-micro", "e2-small", "e2-medium", "e2-standard-2", "e2-standard-4",
+      "n1-standard-1", "n1-standard-2", "n1-standard-4", "n2-standard-2"
+    ], var.machine_type)
+    error_message = "Machine type must be a valid GCE machine type."
+  }
+}
+
+variable "disk_size_gb" {
+  description = "Size of the disk attached to each node (GB)"
+  type        = number
+  default     = 100
+  
+  validation {
+    condition     = var.disk_size_gb >= 20 && var.disk_size_gb <= 2000
+    error_message = "Disk size must be between 20 and 2000 GB."
+  }
+}
+
+variable "disk_type" {
+  description = "Type of the disk attached to each node"
+  type        = string
+  default     = "pd-standard"
+  
+  validation {
+    condition     = contains(["pd-standard", "pd-ssd", "pd-balanced"], var.disk_type)
+    error_message = "Disk type must be one of: pd-standard, pd-ssd, pd-balanced."
+  }
+}
+
+# =============================================================================
+# SCALING CONFIGURATION
+# =============================================================================
+
+variable "dev_node_count" {
+  description = "Fixed node count for dev environment"
+  type        = number
+  default     = 1
+  
+  validation {
+    condition     = var.dev_node_count >= 1 && var.dev_node_count <= 5
+    error_message = "Dev node count must be between 1 and 5."
+  }
+}
+
+variable "enable_autoscaling" {
+  description = "Enable cluster autoscaling"
+  type        = bool
+  default     = true
+}
+
+variable "min_node_count" {
+  description = "Minimum number of nodes in the cluster"
+  type        = number
+  default     = 1
+  
+  validation {
+    condition     = var.min_node_count >= 0
+    error_message = "Minimum node count cannot be negative."
+  }
+}
+
+variable "max_node_count" {
+  description = "Maximum number of nodes in the cluster"
+  type        = number
+  default     = 10
+  
+  validation {
+    condition     = var.max_node_count >= var.min_node_count
+    error_message = "Maximum node count must be greater than or equal to minimum node count."
+  }
+}
+
+# =============================================================================
+# SECURITY CONFIGURATION
+# =============================================================================
+
+variable "enable_private_nodes" {
+  description = "Enable private nodes (no external IP)"
+  type        = bool
+  default     = true
+}
+
+variable "enable_private_endpoint" {
+  description = "Enable private endpoint (master not accessible from internet)"
+  type        = bool
+  default     = false  # Keep false for easier access in dev
+}
+
+variable "master_ipv4_cidr_block" {
+  description = "CIDR block for the master network"
+  type        = string
+  default     = "172.16.0.0/28"
+  
+  validation {
+    condition     = can(cidrhost(var.master_ipv4_cidr_block, 0))
+    error_message = "Master CIDR must be a valid CIDR block."
+  }
+}
+
+variable "master_authorized_networks" {
+  description = "List of CIDR blocks that can access the master"
+  type = list(object({
+    cidr_block   = string
+    display_name = string
+  }))
+  default = [
+    {
+      cidr_block   = "0.0.0.0/0"
+      display_name = "All networks"
+    }
+  ]
+}
+
+# =============================================================================
+# FEATURE FLAGS
+# =============================================================================
+
+variable "enable_dns_cache" {
+  description = "Enable NodeLocal DNSCache"
+  type        = bool
+  default     = true
+}
+
+variable "enable_spot_instances" {
+  description = "Enable spot instances for cost savings (dev only)"
+  type        = bool
+  default     = false
+}
+
+variable "auto_repair" {
+  description = "Enable auto-repair for nodes"
+  type        = bool
+  default     = true
+}
+
+variable "auto_upgrade" {
+  description = "Enable auto-upgrade for nodes"
+  type        = bool
+  default     = true
+}
+
+# =============================================================================
+# UPGRADE SETTINGS
+# =============================================================================
+
+variable "max_surge" {
+  description = "Maximum number of nodes that can be created during upgrade"
+  type        = number
+  default     = 1
+  
+  validation {
+    condition     = var.max_surge >= 0
+    error_message = "Max surge cannot be negative."
+  }
+}
+
+variable "max_unavailable" {
+  description = "Maximum number of nodes that can be unavailable during upgrade"
+  type        = number
+  default     = 0
+  
+  validation {
+    condition     = var.max_unavailable >= 0
+    error_message = "Max unavailable cannot be negative."
+  }
+}
+
+# =============================================================================
+# PRODUCTION-SPECIFIC FEATURES
+# =============================================================================
+
+variable "database_encryption_key" {
+  description = "KMS key for database encryption (prod only)"
+  type        = string
+  default     = null
+}
+
+variable "maintenance_start_time" {
+  description = "Maintenance window start time (RFC3339 format)"
+  type        = string
+  default     = "2023-01-01T04:00:00Z"
+}
+
+variable "maintenance_end_time" {
+  description = "Maintenance window end time (RFC3339 format)"
+  type        = string
+  default     = "2023-01-01T08:00:00Z"
+}
+
+variable "maintenance_recurrence" {
+  description = "Maintenance window recurrence (RFC5545 format)"
+  type        = string
+  default     = "FREQ=WEEKLY;BYDAY=SU"
+}
+
+# =============================================================================
+# HIGH-MEMORY NODE POOL (Production)
+# =============================================================================
+
+variable "enable_high_memory_pool" {
+  description = "Enable high-memory node pool for data-intensive workloads"
+  type        = bool
+  default     = false
+}
+
+variable "high_memory_machine_type" {
+  description = "Machine type for high-memory nodes"
+  type        = string
+  default     = "n2-highmem-2"
+}
+
+variable "high_memory_max_nodes" {
+  description = "Maximum nodes in high-memory pool"
+  type        = number
+  default     = 3
+}
+
+# =============================================================================
+# SERVICE ACCOUNT CONFIGURATION
+# =============================================================================
+
+variable "additional_service_account_roles" {
+  description = "Additional IAM roles to assign to the GKE service account"
+  type        = list(string)
+  default     = []
+}
+
+variable "create_service_account_key" {
+  description = "Create a service account key for external access"
+  type        = bool
+  default     = false
+}
+
+variable "workload_identity_service_accounts" {
+  description = "Kubernetes service accounts for Workload Identity"
+  type = list(object({
+    name      = string
+    namespace = string
+  }))
+  default = []
+}
+
+variable "conditional_roles" {
+  description = "IAM roles with conditions (prod only)"
+  type = list(object({
+    role = string
+    condition = object({
+      title       = string
+      description = string
+      expression  = string
+    })
+  }))
+  default = []
+}
+
+# =============================================================================
+# LABELS AND TAGS
+# =============================================================================
+
+variable "labels" {
+  description = "Labels to apply to the cluster"
+  type        = map(string)
+  default = {
+    managed-by = "terraform"
+  }
+}
+
+variable "node_labels" {
+  description = "Labels to apply to nodes"
+  type        = map(string)
+  default     = {}
+}
+
+variable "network_tags" {
+  description = "Network tags to apply to nodes"
+  type        = list(string)
+  default     = ["web"]
+}
+
+variable "node_taints" {
+  description = "Taints to apply to nodes"
+  type = list(object({
+    key    = string
+    value  = string
+    effect = string
+  }))
+  default = []
+}

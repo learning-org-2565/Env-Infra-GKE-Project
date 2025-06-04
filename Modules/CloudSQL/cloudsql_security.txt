@@ -1,0 +1,298 @@
+# =============================================================================
+# CLOUDSQL SECURITY - modules/cloudsql/security.tf
+# Advanced security configurations for CloudSQL
+# =============================================================================
+
+# =============================================================================
+# PASSWORD ROTATION (for production environments)
+# =============================================================================
+
+# Password rotation schedule for app user (prod only)
+resource "time_rotating" "app_password_rotation" {
+  count = var.environment == "prod" && var.enable_password_rotation ? 1 : 0
+
+  rotation_days = var.password_rotation_days
+
+  keepers = {
+    instance_name = var.instance_name
+    user_name     = var.app_user_name
+  }
+}
+
+# Rotated app user password
+resource "random_password" "app_password_rotated" {
+  count = var.environment == "prod" && var.enable_password_rotation ? 1 : 0
+
+  length  = 16
+  special = true
+  override_special = "!#$%&*()-_=+[]{}<>?"
+
+  keepers = {
+    rotation_time = time_rotating.app_password_rotation[0].id
+  }
+}
+
+# Update app user password when rotation occurs
+resource "google_sql_user" "app_user_rotated" {
+  count = var.environment == "prod" && var.enable_password_rotation ? 1 : 0
+
+  name     = "${var.app_user_name}-rotated"
+  instance = google_sql_database_instance.postgres.name
+  password = random_password.app_password_rotated[0].result
+  type     = "BUILT_IN"
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+# =============================================================================
+# IAM DATABASE AUTHENTICATION
+# =============================================================================
+
+# IAM database user for service accounts (prod only)
+resource "google_sql_user" "iam_service_account_user" {
+  count = var.environment == "prod" && var.enable_iam_auth ? 1 : 0
+
+  name     = var.iam_service_account_email
+  instance = google_sql_database_instance.postgres.name
+  type     = "CLOUD_IAM_SERVICE_ACCOUNT"
+
+  # IAM users don't have passwords
+  deletion_policy = "ABANDON"
+}
+
+# IAM database user for specific Google account (admin access)
+resource "google_sql_user" "iam_user" {
+  for_each = var.iam_users
+
+  name     = each.value.email
+  instance = google_sql_database_instance.postgres.name
+  type     = "CLOUD_IAM_USER"
+
+  deletion_policy = each.value.deletion_policy
+}
+
+# =============================================================================
+# DATABASE ROLES AND PRIVILEGES
+# =============================================================================
+
+# Application-specific database role
+resource "postgresql_role" "app_role" {
+  count = var.create_app_role ? 1 : 0
+
+  name     = var.app_role_name
+  login    = false
+  createdb = var.app_role_createdb
+  
+  # Set specific privileges
+  superuser         = false
+  create_role       = false
+  inherit           = true
+  replication       = false
+  bypass_row_level_security = false
+
+  # Connection limit
+  connection_limit = var.app_role_connection_limit
+
+  depends_on = [
+    google_sql_database_instance.postgres,
+    google_sql_user.app_user
+  ]
+}
+
+# Grant role to app user
+resource "postgresql_grant" "app_user_role" {
+  count = var.create_app_role ? 1 : 0
+
+  database    = google_sql_database.main_database.name
+  role        = google_sql_user.app_user.name
+  schema      = "public"
+  object_type = "database"
+  privileges  = var.app_user_privileges
+
+  depends_on = [
+    postgresql_role.app_role,
+    google_sql_database.main_database
+  ]
+}
+
+# =============================================================================
+# SSL/TLS CONFIGURATION
+# =============================================================================
+
+# Server CA certificate for SSL connections
+data "google_sql_ca_certs" "server_ca_certs" {
+  instance = google_sql_database_instance.postgres.name
+}
+
+# Client SSL certificate for applications (if required)
+resource "google_sql_ssl_cert" "app_client_cert" {
+  count = var.require_ssl && var.create_app_ssl_cert ? 1 : 0
+
+  common_name = "${var.instance_name}-app-client"
+  instance    = google_sql_database_instance.postgres.name
+
+  depends_on = [google_sql_database_instance.postgres]
+}
+
+# =============================================================================
+# AUDIT LOGGING (for compliance)
+# =============================================================================
+
+# Enable audit logging for production
+resource "google_sql_database_instance" "postgres_with_audit" {
+  count = var.environment == "prod" && var.enable_audit_logs ? 0 : 0 # Handled in main.tf
+
+  # Note: Audit logging is configured via database flags in main.tf
+  # This is a placeholder for additional audit configurations
+}
+
+# =============================================================================
+# BACKUP ENCRYPTION (production only)
+# =============================================================================
+
+# Customer-managed encryption key for backups
+resource "google_kms_key_ring" "cloudsql_keyring" {
+  count = var.environment == "prod" && var.enable_backup_encryption ? 1 : 0
+
+  name     = "${var.instance_name}-backup-keyring"
+  location = var.region
+  project  = var.project_id
+}
+
+resource "google_kms_crypto_key" "backup_key" {
+  count = var.environment == "prod" && var.enable_backup_encryption ? 1 : 0
+
+  name     = "${var.instance_name}-backup-key"
+  key_ring = google_kms_key_ring.cloudsql_keyring[0].id
+  purpose  = "ENCRYPT_DECRYPT"
+
+  version_template {
+    algorithm = "GOOGLE_SYMMETRIC_ENCRYPTION"
+  }
+
+  rotation_period = var.key_rotation_period
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+# Grant CloudSQL service account access to the encryption key
+resource "google_kms_crypto_key_iam_binding" "cloudsql_key_binding" {
+  count = var.environment == "prod" && var.enable_backup_encryption ? 1 : 0
+
+  crypto_key_id = google_kms_crypto_key.backup_key[0].id
+  role          = "roles/cloudkms.cryptoKeyEncrypterDecrypter"
+
+  members = [
+    "serviceAccount:service-${data.google_project.current.number}@gcp-sa-cloud-sql.iam.gserviceaccount.com"
+  ]
+}
+
+# =============================================================================
+# SECRETS MANAGEMENT
+# =============================================================================
+
+# Store database passwords in Secret Manager
+resource "google_secret_manager_secret" "postgres_password" {
+  count = var.store_passwords_in_secret_manager ? 1 : 0
+
+  secret_id = "${var.instance_name}-postgres-password"
+  project   = var.project_id
+
+  labels = merge(
+    var.labels,
+    {
+      environment = var.environment
+      purpose     = "database-password"
+      user        = "postgres"
+    }
+  )
+
+  replication {
+    automatic = true
+  }
+}
+
+resource "google_secret_manager_secret_version" "postgres_password" {
+  count = var.store_passwords_in_secret_manager ? 1 : 0
+
+  secret      = google_secret_manager_secret.postgres_password[0].id
+  secret_data = random_password.postgres_password.result
+
+  depends_on = [google_secret_manager_secret.postgres_password]
+}
+
+resource "google_secret_manager_secret" "app_password" {
+  count = var.store_passwords_in_secret_manager ? 1 : 0
+
+  secret_id = "${var.instance_name}-app-password"
+  project   = var.project_id
+
+  labels = merge(
+    var.labels,
+    {
+      environment = var.environment
+      purpose     = "database-password"
+      user        = var.app_user_name
+    }
+  )
+
+  replication {
+    automatic = true
+  }
+}
+
+resource "google_secret_manager_secret_version" "app_password" {
+  count = var.store_passwords_in_secret_manager ? 1 : 0
+
+  secret      = google_secret_manager_secret.app_password[0].id
+  secret_data = random_password.app_password.result
+
+  depends_on = [google_secret_manager_secret.app_password]
+}
+
+# =============================================================================
+# ACCESS CONTROL POLICIES
+# =============================================================================
+
+# IAM policy for database access
+resource "google_sql_database_instance_iam_binding" "database_users" {
+  for_each = var.database_iam_bindings
+
+  project  = var.project_id
+  instance = google_sql_database_instance.postgres.name
+  role     = each.key
+
+  members = each.value
+
+  condition {
+    title       = "Environment-based access"
+    description = "Access limited to ${var.environment} environment"
+    expression  = "request.time.getHours() >= 6 && request.time.getHours() <= 22" # Business hours only
+  }
+}
+
+# =============================================================================
+# COMPLIANCE AND MONITORING
+# =============================================================================
+
+# Log sink for CloudSQL audit logs
+resource "google_logging_project_sink" "cloudsql_audit_sink" {
+  count = var.environment == "prod" && var.enable_audit_logging ? 1 : 0
+
+  name        = "${var.instance_name}-audit-sink"
+  destination = "storage.googleapis.com/${var.audit_log_bucket}"
+  filter      = "resource.type=\"cloudsql_database\" AND protoPayload.serviceName=\"cloudsql.googleapis.com\""
+
+  unique_writer_identity = true
+
+  depends_on = [google_sql_database_instance.postgres]
+}
+
+# Data sources
+data "google_project" "current" {
+  project_id = var.project_id
+}

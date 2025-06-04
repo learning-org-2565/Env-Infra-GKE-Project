@@ -1,0 +1,335 @@
+# =============================================================================
+# CLOUDSQL MODULE OUTPUTS - modules/cloudsql/outputs.tf
+# Output values for database connection and configuration
+# =============================================================================
+
+# =============================================================================
+# INSTANCE INFORMATION
+# =============================================================================
+
+output "instance_name" {
+  description = "Name of the CloudSQL instance"
+  value       = google_sql_database_instance.postgres.name
+}
+
+output "instance_id" {
+  description = "ID of the CloudSQL instance"
+  value       = google_sql_database_instance.postgres.id
+}
+
+output "connection_name" {
+  description = "Connection name for the CloudSQL instance (for Cloud SQL Proxy)"
+  value       = google_sql_database_instance.postgres.connection_name
+}
+
+output "self_link" {
+  description = "Self-link of the CloudSQL instance"
+  value       = google_sql_database_instance.postgres.self_link
+}
+
+output "server_ca_cert" {
+  description = "Server CA certificate information"
+  value       = google_sql_database_instance.postgres.server_ca_cert
+  sensitive   = true
+}
+
+# =============================================================================
+# NETWORK CONFIGURATION
+# =============================================================================
+
+output "private_ip_address" {
+  description = "Private IP address of the CloudSQL instance"
+  value       = google_sql_database_instance.postgres.private_ip_address
+}
+
+output "public_ip_address" {
+  description = "Public IP address of the CloudSQL instance (if enabled)"
+  value       = var.enable_public_ip ? google_sql_database_instance.postgres.public_ip_address : null
+}
+
+output "ip_addresses" {
+  description = "All IP addresses assigned to the instance"
+  value       = google_sql_database_instance.postgres.ip_address
+}
+
+output "private_network" {
+  description = "Private network used by the instance"
+  value       = var.network_self_link
+}
+
+output "private_ip_range_name" {
+  description = "Name of the private IP range allocated"
+  value       = google_compute_global_address.private_ip_range.name
+}
+
+output "private_ip_range_address" {
+  description = "IP address of the private range"
+  value       = google_compute_global_address.private_ip_range.address
+}
+
+# =============================================================================
+# DATABASE INFORMATION
+# =============================================================================
+
+output "database_name" {
+  description = "Name of the main database"
+  value       = google_sql_database.main_database.name
+}
+
+output "database_charset" {
+  description = "Character set of the database"
+  value       = google_sql_database.main_database.charset
+}
+
+output "database_collation" {
+  description = "Collation of the database"
+  value       = google_sql_database.main_database.collation
+}
+
+output "additional_databases" {
+  description = "Additional databases created"
+  value = {
+    for db in google_sql_database.additional_databases : db.name => {
+      name      = db.name
+      charset   = db.charset
+      collation = db.collation
+    }
+  }
+}
+
+# =============================================================================
+# USER CREDENTIALS (Sensitive)
+# =============================================================================
+
+output "postgres_user" {
+  description = "PostgreSQL admin user information"
+  value = {
+    name = google_sql_user.postgres_user.name
+    type = google_sql_user.postgres_user.type
+  }
+}
+
+output "postgres_password" {
+  description = "Password for the PostgreSQL admin user"
+  value       = random_password.postgres_password.result
+  sensitive   = true
+}
+
+output "app_user" {
+  description = "Application user information"
+  value = {
+    name = google_sql_user.app_user.name
+    type = google_sql_user.app_user.type
+  }
+}
+
+output "app_user_password" {
+  description = "Password for the application user"
+  value       = random_password.app_password.result
+  sensitive   = true
+}
+
+output "additional_users" {
+  description = "Additional database users created"
+  value = {
+    for user in google_sql_user.additional_users : user.name => {
+      name = user.name
+      type = user.type
+      host = user.host
+    }
+  }
+  sensitive = true
+}
+
+# =============================================================================
+# CONNECTION STRINGS
+# =============================================================================
+
+output "connection_string_private" {
+  description = "PostgreSQL connection string using private IP"
+  value       = "postgresql://${google_sql_user.app_user.name}:${urlencode(random_password.app_password.result)}@${google_sql_database_instance.postgres.private_ip_address}:5432/${google_sql_database.main_database.name}"
+  sensitive   = true
+}
+
+output "connection_string_proxy" {
+  description = "PostgreSQL connection string for Cloud SQL Proxy"
+  value       = "postgresql://${google_sql_user.app_user.name}:${urlencode(random_password.app_password.result)}@localhost:5432/${google_sql_database.main_database.name}"
+  sensitive   = true
+}
+
+output "connection_string_admin" {
+  description = "PostgreSQL connection string for admin user"
+  value       = "postgresql://${google_sql_user.postgres_user.name}:${urlencode(random_password.postgres_password.result)}@${google_sql_database_instance.postgres.private_ip_address}:5432/${google_sql_database.main_database.name}"
+  sensitive   = true
+}
+
+# =============================================================================
+# CLOUD SQL PROXY CONFIGURATION
+# =============================================================================
+
+output "proxy_connection_config" {
+  description = "Configuration for Cloud SQL Proxy"
+  value = {
+    instance_connection_name = google_sql_database_instance.postgres.connection_name
+    database_name           = google_sql_database.main_database.name
+    user                    = google_sql_user.app_user.name
+    port                    = 5432
+    region                  = var.region
+    project_id              = var.project_id
+  }
+}
+
+# =============================================================================
+# KUBERNETES SECRETS CONFIGURATION
+# =============================================================================
+
+output "kubernetes_secret_data" {
+  description = "Data for Kubernetes secrets (base64 encoded values)"
+  value = {
+    DB_HOST                      = base64encode(google_sql_database_instance.postgres.private_ip_address)
+    DB_PORT                      = base64encode("5432")
+    DB_NAME                      = base64encode(google_sql_database.main_database.name)
+    DB_USER                      = base64encode(google_sql_user.app_user.name)
+    DB_PASSWORD                  = base64encode(random_password.app_password.result)
+    INSTANCE_CONNECTION_NAME     = base64encode(google_sql_database_instance.postgres.connection_name)
+    DB_CONNECTION_STRING         = base64encode("postgresql://${google_sql_user.app_user.name}:${urlencode(random_password.app_password.result)}@localhost:5432/${google_sql_database.main_database.name}")
+  }
+  sensitive = true
+}
+
+# =============================================================================
+# SSL CERTIFICATE INFORMATION
+# =============================================================================
+
+output "ssl_certs" {
+  description = "SSL certificate information"
+  value = var.require_ssl && var.create_ssl_cert ? {
+    client_cert      = google_sql_ssl_cert.client_cert[0].cert
+    client_key       = google_sql_ssl_cert.client_cert[0].private_key
+    server_ca_cert   = google_sql_ssl_cert.client_cert[0].server_ca_cert
+    common_name      = google_sql_ssl_cert.client_cert[0].common_name
+    sha1_fingerprint = google_sql_ssl_cert.client_cert[0].sha1_fingerprint
+  } : null
+  sensitive = true
+}
+
+output "app_ssl_cert" {
+  description = "Application SSL certificate information"
+  value = var.require_ssl && var.create_app_ssl_cert ? {
+    client_cert      = google_sql_ssl_cert.app_client_cert[0].cert
+    client_key       = google_sql_ssl_cert.app_client_cert[0].private_key
+    server_ca_cert   = google_sql_ssl_cert.app_client_cert[0].server_ca_cert
+    common_name      = google_sql_ssl_cert.app_client_cert[0].common_name
+    sha1_fingerprint = google_sql_ssl_cert.app_client_cert[0].sha1_fingerprint
+  } : null
+  sensitive = true
+}
+
+# =============================================================================
+# READ REPLICA INFORMATION
+# =============================================================================
+
+output "read_replica" {
+  description = "Read replica information (if created)"
+  value = var.environment == "prod" && var.enable_read_replica ? {
+    name               = google_sql_database_instance.read_replica[0].name
+    connection_name    = google_sql_database_instance.read_replica[0].connection_name
+    private_ip_address = google_sql_database_instance.read_replica[0].private_ip_address
+    region             = google_sql_database_instance.read_replica[0].region
+  } : null
+}
+
+# =============================================================================
+# SECRET MANAGER INFORMATION
+# =============================================================================
+
+output "secret_manager_secrets" {
+  description = "Secret Manager secret names (if created)"
+  value = var.store_passwords_in_secret_manager ? {
+    postgres_password_secret = google_secret_manager_secret.postgres_password[0].secret_id
+    app_password_secret      = google_secret_manager_secret.app_password[0].secret_id
+  } : null
+}
+
+# =============================================================================
+# MONITORING AND DNS
+# =============================================================================
+
+output "dns_name" {
+  description = "DNS name for the CloudSQL instance (if private DNS is enabled)"
+  value       = var.create_private_dns_zone ? google_dns_record_set.cloudsql_record[0].name : null
+}
+
+output "monitoring_config" {
+  description = "Monitoring configuration"
+  value = {
+    query_insights_enabled  = var.query_insights_enabled
+    uptime_checks_enabled   = var.enable_uptime_checks
+    alerting_enabled        = var.enable_alerting
+    audit_logs_enabled      = var.enable_audit_logs
+  }
+}
+
+# =============================================================================
+# BACKUP AND MAINTENANCE
+# =============================================================================
+
+output "backup_configuration" {
+  description = "Backup configuration details"
+  value = {
+    enabled                        = var.backup_enabled
+    start_time                     = var.backup_start_time
+    location                       = var.backup_location
+    point_in_time_recovery_enabled = var.point_in_time_recovery_enabled
+    retained_backups               = var.backup_retained_backups
+    transaction_log_retention_days = var.transaction_log_retention_days
+  }
+}
+
+output "maintenance_window" {
+  description = "Maintenance window configuration"
+  value = var.environment == "prod" ? {
+    day          = var.maintenance_window_day
+    hour         = var.maintenance_window_hour
+    update_track = var.maintenance_window_update_track
+  } : null
+}
+
+# =============================================================================
+# ENVIRONMENT-SPECIFIC CONFIGURATION SUMMARY
+# =============================================================================
+
+output "environment_config" {
+  description = "Environment-specific configuration summary"
+  value = {
+    environment          = var.environment
+    tier                 = var.tier
+    availability_type    = var.availability_type
+    disk_size_gb         = var.disk_size_gb
+    disk_type            = var.disk_type
+    backup_enabled       = var.backup_enabled
+    deletion_protection  = var.deletion_protection
+    require_ssl          = var.require_ssl
+    enable_public_ip     = var.enable_public_ip
+    read_replica_enabled = var.environment == "prod" ? var.enable_read_replica : false
+  }
+}
+
+# =============================================================================
+# COST TRACKING AND LABELS
+# =============================================================================
+
+output "cost_allocation_labels" {
+  description = "Labels for cost allocation and tracking"
+  value = merge(
+    var.labels,
+    {
+      environment    = var.environment
+      instance_name  = var.instance_name
+      database_type  = "postgresql"
+      managed_by     = "terraform"
+      cost_center    = var.environment == "prod" ? "production" : "development"
+      resource_type  = "cloudsql-instance"
+    }
+  )
+}

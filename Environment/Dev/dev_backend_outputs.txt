@@ -1,0 +1,236 @@
+# =============================================================================
+# DEV BACKEND CONFIG - environments/dev/backend-dev.tfbackend
+# Backend configuration for dev environment state isolation
+# =============================================================================
+
+# GCS backend configuration for dev environment
+bucket = "terraform-state-dev-12345"     # Replace with your dev state bucket
+prefix = "environments/dev/terraform.tfstate"
+
+# =============================================================================
+# DEV ENVIRONMENT OUTPUTS - environments/dev/outputs.tf
+# Output values for the development environment
+# =============================================================================
+
+# =============================================================================
+# QUICK ACCESS INFORMATION
+# =============================================================================
+
+output "environment_summary" {
+  description = "Quick summary of the dev environment"
+  value = {
+    environment       = var.environment
+    project_id        = var.project_id
+    region           = var.region
+    cost_optimized   = "true"
+    auto_shutdown    = var.auto_delete_resources
+    estimated_cost   = "$15-60/month"
+  }
+}
+
+# =============================================================================
+# VPC OUTPUTS
+# =============================================================================
+
+output "vpc_info" {
+  description = "VPC network information"
+  value = {
+    vpc_name           = module.vpc.vpc_name
+    vpc_id            = module.vpc.vpc_id
+    public_subnet_cidr = module.vpc.network_config.public_subnet_cidr
+    private_subnet_cidr = module.vpc.network_config.private_subnet_cidr
+    pod_cidr          = module.vpc.pod_cidr
+    service_cidr      = module.vpc.service_cidr
+  }
+}
+
+# =============================================================================
+# GKE OUTPUTS
+# =============================================================================
+
+output "gke_info" {
+  description = "GKE cluster information"
+  value = {
+    cluster_name     = module.gke.cluster_name
+    cluster_location = module.gke.cluster_location
+    cluster_endpoint = module.gke.cluster_endpoint
+    node_count      = var.gke_node_count
+    machine_type    = var.gke_machine_type
+    cost_optimized  = "spot-instances-enabled"
+  }
+  sensitive = true
+}
+
+output "kubectl_config_command" {
+  description = "Command to configure kubectl for this cluster"
+  value       = module.gke.kubectl_config_command
+}
+
+# =============================================================================
+# CLOUDSQL OUTPUTS
+# =============================================================================
+
+output "cloudsql_info" {
+  description = "CloudSQL database information"
+  value = {
+    instance_name      = module.cloudsql.instance_name
+    database_name     = module.cloudsql.database_name
+    private_ip        = module.cloudsql.private_ip_address
+    connection_name   = module.cloudsql.connection_name
+    tier             = var.sql_tier
+    backup_enabled   = "false"  # Disabled for dev cost savings
+  }
+}
+
+# =============================================================================
+# CONNECTION INFORMATION (for development)
+# =============================================================================
+
+output "dev_connection_info" {
+  description = "Development connection information"
+  value = {
+    # Kubernetes
+    kubectl_command = "gcloud container clusters get-credentials ${module.gke.cluster_name} --region ${var.region} --project ${var.project_id}"
+    
+    # Database (via Cloud SQL Proxy)
+    cloudsql_proxy_command = "cloud_sql_proxy -instances=${module.cloudsql.connection_name}=tcp:5432 &"
+    
+    # Database direct connection (for testing)
+    database_host = module.cloudsql.private_ip_address
+    database_port = "5432"
+    
+    # Useful development URLs
+    kubernetes_dashboard = "kubectl proxy --port=8080"
+  }
+  sensitive = true
+}
+
+# =============================================================================
+# DEVELOPMENT CREDENTIALS (Sensitive)
+# =============================================================================
+
+output "dev_credentials" {
+  description = "Development credentials (use carefully)"
+  value = {
+    database_user     = module.cloudsql.app_user.name
+    # Note: Actual passwords are stored in Kubernetes secrets and Secret Manager
+    secret_names = {
+      k8s_db_secret    = kubernetes_secret.cloudsql_credentials.metadata[0].name
+      k8s_proxy_secret = kubernetes_secret.cloudsql_proxy_key.metadata[0].name
+    }
+  }
+  sensitive = true
+}
+
+# =============================================================================
+# COST TRACKING OUTPUTS
+# =============================================================================
+
+output "cost_tracking" {
+  description = "Information for cost tracking and optimization"
+  value = {
+    environment        = var.environment
+    cost_center       = var.cost_center
+    estimated_monthly = "$15-60"
+    cost_optimization = {
+      spot_instances   = "100% enabled"
+      small_instances  = "e2-micro + db-f1-micro"
+      minimal_storage  = "50GB + 10GB"
+      no_backups      = "disabled for cost"
+      single_zone     = "us-central1-a only"
+    }
+    
+    # Cost optimization recommendations
+    savings_tips = [
+      "Auto-shutdown enabled for off-hours",
+      "Spot instances save 60-80%",
+      "Single zone reduces cross-zone charges",
+      "Minimal disk sizes for dev workloads",
+      "No database backups in dev"
+    ]
+  }
+}
+
+# =============================================================================
+# SECURITY STATUS (for learning)
+# =============================================================================
+
+output "security_status" {
+  description = "Security configuration status (for learning purposes)"
+  value = {
+    environment_type = "DEVELOPMENT"
+    security_level  = "RELAXED"
+    
+    enabled_features = [
+      "Private CloudSQL networking",
+      "Kubernetes secrets management",
+      "Service account authentication",
+      "Basic firewall rules"
+    ]
+    
+    dev_exceptions = [
+      "SSH access from anywhere (0.0.0.0/0)",
+      "Public GKE nodes for easy access",
+      "SSL not required for database",
+      "Debug logging enabled"
+    ]
+    
+    prod_recommendations = [
+      "Restrict SSH to office IPs only",
+      "Use private GKE nodes",
+      "Enable SSL for all connections",
+      "Implement audit logging",
+      "Use customer-managed encryption"
+    ]
+  }
+}
+
+# =============================================================================
+# NEXT STEPS FOR DEVELOPERS
+# =============================================================================
+
+output "next_steps" {
+  description = "Next steps for using this development environment"
+  value = {
+    step_1 = "Configure kubectl: ${module.gke.kubectl_config_command}"
+    step_2 = "Verify cluster: kubectl get nodes"
+    step_3 = "Check secrets: kubectl get secrets"
+    step_4 = "View dev info: kubectl get configmap dev-environment-info -o yaml"
+    step_5 = "Deploy your app to 'development' namespace"
+    
+    useful_commands = {
+      "Get database password" = "kubectl get secret cloudsql-credentials -o jsonpath='{.data.DB_PASSWORD}' | base64 -d"
+      "Port forward to database" = "kubectl port-forward svc/cloudsql-proxy 5432:5432"
+      "View all resources" = "kubectl get all --all-namespaces"
+      "Check resource usage" = "kubectl top nodes && kubectl top pods"
+    }
+  }
+}
+
+# =============================================================================
+# TROUBLESHOOTING INFORMATION
+# =============================================================================
+
+output "troubleshooting" {
+  description = "Common troubleshooting information for dev environment"
+  value = {
+    common_issues = {
+      "Pods pending" = "Check: kubectl describe nodes (likely resource constraints)"
+      "Can't connect to DB" = "Verify: kubectl get secret cloudsql-credentials"
+      "Out of resources" = "This is dev with e2-micro - expected with heavy workloads"
+      "Spot instance preempted" = "Normal behavior - workloads will reschedule"
+    }
+    
+    monitoring_commands = {
+      "Check cluster status" = "kubectl get componentstatuses"
+      "View cluster events" = "kubectl get events --sort-by='.lastTimestamp'"
+      "Check resource quotas" = "kubectl describe resourcequota"
+      "View node resources" = "kubectl describe nodes"
+    }
+    
+    cost_monitoring = {
+      "View current costs" = "gcloud billing projects describe ${var.project_id}"
+      "Set up billing alerts" = "gcloud alpha billing budgets create --billing-account=YOUR_BILLING_ACCOUNT"
+    }
+  }
+}
