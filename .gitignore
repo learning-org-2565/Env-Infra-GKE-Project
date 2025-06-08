@@ -1,0 +1,13 @@
+@"
+# Ignore Terraform state files
+*.tfstate
+*.tfstate.*
+# Ignore Terraform backup files
+*.tfstate.backup
+# Ignore Terraform plan files
+*.tfplan
+"@ | Set-Content -Path .gitignore
+
+*.terraform/
+
+*.terraform.lock.hcl

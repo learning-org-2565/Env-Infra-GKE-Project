@@ -1,0 +1,360 @@
+# =============================================================================
+# DEV ENVIRONMENT - environments/dev/main.tf
+# Complete development infrastructure using our custom modules
+# =============================================================================
+
+# =============================================================================
+# TERRAFORM AND PROVIDER CONFIGURATION
+# =============================================================================
+
+terraform {
+  required_version = ">= 1.0"
+
+  # Backend configuration for dev state isolation
+  backend "gcs" {
+    # Configuration loaded from backend-config file during init
+    # terraform init -backend-config=backend-dev.tfbackend
+  }
+
+  required_providers {
+    google = {
+      source  = "hashicorp/google"
+      version = "~> 5.0"
+    }
+    kubernetes = {
+      source  = "hashicorp/kubernetes"
+      version = "~> 2.23"
+    }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.1"
+    }
+  }
+}
+
+# Configure Google Cloud Provider
+provider "google" {
+  project = var.project_id
+  region  = var.region
+}
+
+# Data source for Google Client Config (for Kubernetes auth)
+data "google_client_config" "default" {}
+
+# =============================================================================
+# MODULE 1: VPC NETWORK (Dev-specific networking)
+# =============================================================================
+
+module "vpc" {
+  # Option A: Local module (for development/testing)
+  source = ".."
+  
+  # Option B: Git source (for production/versioned modules)
+  # source = "git::https://github.com/yourorg/terraform-modules.git//vpc?ref=v1.0.0"
+
+  # Required variables
+  project_id  = var.project_id
+  region      = var.region
+  environment = var.environment
+
+  # Dev-specific VPC configuration
+  vpc_name             = "${var.environment}-${var.vpc_name}"
+  public_subnet_cidr   = var.public_subnet_cidr
+  private_subnet_cidr  = var.private_subnet_cidr
+  pod_cidr            = var.pod_cidr
+  service_cidr        = var.service_cidr
+
+  # Dev security settings (more permissive for development)
+  ssh_source_ranges = var.ssh_source_ranges
+  gke_master_cidr   = var.gke_master_cidr
+
+  # Development-specific labels
+  labels = merge(var.common_labels, {
+    environment = var.environment
+    cost-center = "development"
+    auto-delete = "true"  # For dev cleanup automation
+  })
+
+  # Development networking options
+  enable_flow_logs     = false  # Disable for cost savings in dev
+  flow_log_sampling    = 0.1    # Minimal sampling if enabled
+  nat_min_ports_per_vm = 64     # Minimal ports for cost optimization
+}
+
+# =============================================================================
+# MODULE 2: GKE CLUSTER (Dev-specific Kubernetes)
+# =============================================================================
+
+module "gke" {
+  # Local module source
+  source = "../../modules/gke"
+  
+  # Git source alternative
+  # source = "git::https://github.com/yourorg/terraform-modules.git//gke?ref=v1.0.0"
+
+  # Required variables
+  project_id  = var.project_id
+  region      = var.region
+  environment = var.environment
+
+  # Cluster configuration
+  cluster_name = "${var.environment}-${var.gke_cluster_name}"
+
+  # Network configuration from VPC module
+  network           = module.vpc.gke_network_config.network
+  subnetwork        = module.vpc.gke_network_config.subnetwork
+  pod_range_name    = module.vpc.gke_network_config.pod_range_name
+  service_range_name = module.vpc.gke_network_config.service_range_name
+
+  # DEV-SPECIFIC SETTINGS (Small, cheap, single-zone)
+  node_zones        = [var.primary_zone]  # Single zone for dev
+  machine_type      = var.gke_machine_type
+  dev_node_count    = var.gke_node_count
+  disk_size_gb      = var.gke_disk_size_gb
+  disk_type         = var.gke_disk_type
+
+  # Cost optimization for dev
+  enable_autoscaling    = false  # Fixed size for predictable costs
+  enable_spot_instances = true   # 60-80% cost savings
+  auto_repair          = true    # Keep enabled for stability
+  auto_upgrade         = false   # Manual control in dev
+
+  # Security settings (relaxed for dev accessibility)
+  enable_private_nodes    = false  # Public nodes for easier access
+  enable_private_endpoint = false  # Public endpoint for kubectl access
+
+  # Dev-specific authorized networks (allow broader access)
+  master_authorized_networks = [
+    {
+      cidr_block   = "0.0.0.0/0"
+      display_name = "All networks (dev only)"
+    }
+  ]
+
+  # Development features
+  enable_dns_cache = false  # Disable for simplicity
+  
+  # Labels for cost tracking
+  labels = merge(var.common_labels, {
+    environment = var.environment
+    cluster-size = "small"
+    cost-type   = "development"
+  })
+
+  node_labels = {
+    environment = var.environment
+    node-type   = "dev"
+    cost-center = "development"
+  }
+
+  network_tags = ["web", "dev"]
+
+  # Depends on VPC being ready
+  depends_on = [module.vpc]
+}
+
+# =============================================================================
+# MODULE 3: CLOUDSQL DATABASE (Dev-specific database)
+# =============================================================================
+
+module "cloudsql" {
+  # Local module source
+  source = "../../modules/cloudsql"
+  
+  # Git source alternative
+  # source = "git::https://github.com/yourorg/terraform-modules.git//cloudsql?ref=v1.0.0"
+
+  # Required variables
+  project_id  = var.project_id
+  region      = var.region
+  environment = var.environment
+
+  # Instance configuration
+  instance_name = "${var.environment}-${var.sql_instance_name}"
+
+  # Network configuration from VPC module
+  network_id        = module.vpc.vpc_id
+  network_name      = module.vpc.vpc_name
+  network_self_link = module.vpc.vpc_self_link
+
+  # DEV-SPECIFIC SETTINGS (Small, cheap, minimal features)
+  tier              = var.sql_tier
+  disk_size_gb      = var.sql_disk_size
+  disk_type         = var.sql_disk_type
+  availability_type = "ZONAL"  # Single zone for cost savings
+
+  # Database configuration
+  database_name = var.sql_database_name
+  app_user_name = var.sql_app_user
+
+  # DEV BACKUP SETTINGS (Minimal for cost)
+  backup_enabled                 = false  # No backups in dev
+  point_in_time_recovery_enabled = false  # No PITR in dev
+  deletion_protection           = false   # Easy cleanup in dev
+
+  # Security settings (basic for dev)
+  require_ssl      = false  # Simplified connections in dev
+  enable_public_ip = false  # Still use private networking
+
+  # Allow access from GKE pods and private subnet
+  allowed_source_ranges = [
+    module.vpc.pod_cidr,
+    module.vpc.service_cidr,
+    module.vpc.network_config.private_subnet_cidr
+  ]
+
+  # Dev-specific features
+  enable_read_replica = false  # No replicas in dev
+  enable_iam_auth    = false   # Basic auth for simplicity
+  
+  # Password management (automated for learning)
+  store_passwords_in_secret_manager = true  # Learn Secret Manager integration
+  create_firewall_rules            = true   # Learn firewall rules
+
+  # Labels for cost tracking
+  labels = merge(var.common_labels, {
+    environment = var.environment
+    database-size = "small"
+    cost-type    = "development"
+  })
+
+  # Depends on VPC networking being ready
+  depends_on = [module.vpc]
+}
+
+# =============================================================================
+# KUBERNETES PROVIDER CONFIGURATION
+# =============================================================================
+
+# Configure Kubernetes provider after GKE cluster is ready
+provider "kubernetes" {
+  host                   = module.gke.kubernetes_host
+  token                  = data.google_client_config.default.access_token
+  cluster_ca_certificate = module.gke.kubernetes_cluster_ca_certificate
+}
+
+# =============================================================================
+# KUBERNETES SECRETS (Automated secret management)
+# =============================================================================
+
+# Create Kubernetes secret with CloudSQL credentials
+resource "kubernetes_secret" "cloudsql_credentials" {
+  metadata {
+    name      = "cloudsql-credentials"
+    namespace = "default"
+    
+    labels = {
+      app         = "cloudsql"
+      environment = var.environment
+      managed-by  = "terraform"
+    }
+  }
+
+  # Use CloudSQL module outputs for automatic credential management
+  data = module.cloudsql.kubernetes_secret_data
+
+  type = "Opaque"
+
+  depends_on = [module.gke, module.cloudsql]
+}
+
+# Create service account key secret for Cloud SQL Proxy
+resource "google_service_account" "cloudsql_proxy" {
+  account_id   = "${var.environment}-cloudsql-proxy"
+  display_name = "CloudSQL Proxy for ${var.environment}"
+  description  = "Service account for CloudSQL Proxy in ${var.environment} environment"
+}
+
+# Grant CloudSQL client role to service account
+resource "google_project_iam_member" "cloudsql_client" {
+  project = var.project_id
+  role    = "roles/cloudsql.client"
+  member  = "serviceAccount:${google_service_account.cloudsql_proxy.email}"
+}
+
+# Create service account key
+resource "google_service_account_key" "cloudsql_proxy_key" {
+  service_account_id = google_service_account.cloudsql_proxy.name
+  public_key_type    = "TYPE_X509_PEM_FILE"
+}
+
+# Store service account key in Kubernetes secret
+resource "kubernetes_secret" "cloudsql_proxy_key" {
+  metadata {
+    name      = "cloudsql-proxy-key"
+    namespace = "default"
+    
+    labels = {
+      app         = "cloudsql-proxy"
+      environment = var.environment
+      managed-by  = "terraform"
+    }
+  }
+
+  data = {
+    "service-account.json" = base64decode(google_service_account_key.cloudsql_proxy_key.private_key)
+  }
+
+  type = "Opaque"
+
+  depends_on = [module.gke]
+}
+
+# =============================================================================
+# DEVELOPMENT UTILITIES (Learning helpers)
+# =============================================================================
+
+# Create a configmap with connection information for easy reference
+resource "kubernetes_config_map" "dev_info" {
+  metadata {
+    name      = "dev-environment-info"
+    namespace = "default"
+    
+    labels = {
+      environment = var.environment
+      managed-by  = "terraform"
+    }
+  }
+
+  data = {
+    # Cluster information
+    cluster_name     = module.gke.cluster_name
+    cluster_endpoint = module.gke.cluster_endpoint
+    cluster_region   = var.region
+    
+    # Database information
+    database_host              = module.cloudsql.private_ip_address
+    database_name              = module.cloudsql.database_name
+    database_connection_name   = module.cloudsql.connection_name
+    
+    # Network information
+    vpc_name           = module.vpc.vpc_name
+    public_subnet_cidr = module.vpc.network_config.public_subnet_cidr
+    pod_cidr          = module.vpc.pod_cidr
+    service_cidr      = module.vpc.service_cidr
+    
+    # Useful commands
+    kubectl_config_command = module.gke.kubectl_config_command
+    gcloud_sql_connect     = "gcloud sql connect ${module.cloudsql.instance_name} --user=${module.cloudsql.app_user.name} --database=${module.cloudsql.database_name}"
+  }
+
+  depends_on = [module.gke]
+}
+
+# =============================================================================
+# DEVELOPMENT NAMESPACE (Optional - for organized development)
+# =============================================================================
+
+resource "kubernetes_namespace" "development" {
+  metadata {
+    name = "development"
+    
+    labels = {
+      environment = var.environment
+      purpose     = "application-development"
+      managed-by  = "terraform"
+    }
+  }
+
+  depends_on = [module.gke]
+}
