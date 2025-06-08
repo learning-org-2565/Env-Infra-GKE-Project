@@ -1,0 +1,265 @@
+name: 🚀 Infrastructure Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target Environment'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+        - dev
+        - staging
+        - prod
+        
+      action:
+        description: 'Terraform Action'
+        required: true
+        default: 'plan'
+        type: choice
+        options:
+        - plan
+        - apply
+        - destroy
+        - plan-destroy
+        
+      infrastructure_scope:
+        description: 'Infrastructure to Deploy'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+        - all
+        - vpc
+        - gke
+        - cloudsql
+
+env:
+  TF_VERSION: '1.6.0'
+  GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+  TF_VAR_project_id: ${{ secrets.GCP_PROJECT_ID }}
+  TF_VAR_environment: ${{ inputs.environment }}
+
+jobs:
+  terraform:
+    name: Terraform ${{ inputs.action }} - ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    
+    environment: ${{ inputs.environment }}
+    
+    steps:
+    - name: 📥 Checkout Code
+      uses: actions/checkout@v4
+      
+    - name: 🔐 Setup GCP Authentication
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
+        
+    - name: ⚙️ Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ env.TF_VERSION }}
+        terraform_wrapper: false
+        
+    - name: 🔧 Configure Terraform Backend
+      run: |
+        cat > backend-config.tfvars << EOF
+        bucket = "${{ env.TF_STATE_BUCKET }}"
+        prefix = "terraform/state/${{ inputs.environment }}"
+        EOF
+        
+    - name: 🏗️ Terraform Init
+      run: |
+        terraform init -backend-config=backend-config.tfvars
+        
+    - name: ✅ Terraform Validate
+      run: terraform validate
+      
+    - name: 📋 Set Infrastructure Targets
+      id: targets
+      run: |
+        case "${{ inputs.infrastructure_scope }}" in
+          "all")
+            echo "targets=" >> $GITHUB_OUTPUT
+            ;;
+          "vpc")
+            echo "targets=-target=module.vpc" >> $GITHUB_OUTPUT
+            ;;
+          "gke")
+            echo "targets=-target=module.gke -target=module.vpc" >> $GITHUB_OUTPUT
+            ;;
+          "cloudsql")
+            echo "targets=-target=module.cloudsql -target=module.vpc" >> $GITHUB_OUTPUT
+            ;;
+        esac
+        
+    - name: 📊 Terraform Plan
+      id: plan
+      run: |
+        terraform plan ${{ steps.targets.outputs.targets }} \
+          -var-file="${{ inputs.environment }}.tfvars" \
+          -out=tfplan \
+          -detailed-exitcode
+      continue-on-error: true
+      
+    - name: ⚠️ Terraform Plan Failed
+      if: steps.plan.outcome == 'failure'
+      run: |
+        echo "❌ Terraform plan failed!"
+        exit 1
+        
+    - name: 🚀 Terraform Apply
+      if: inputs.action == 'apply' && steps.plan.outcome == 'success'
+      run: |
+        terraform apply tfplan
+        
+    - name: 💥 Terraform Destroy
+      if: inputs.action == 'destroy' || inputs.action == 'plan-destroy'
+      run: |
+        if [ "${{ inputs.action }}" == "plan-destroy" ]; then
+          terraform plan -destroy ${{ steps.targets.outputs.targets }} \
+            -var-file="${{ inputs.environment }}.tfvars"
+        else
+          terraform destroy ${{ steps.targets.outputs.targets }} \
+            -var-file="${{ inputs.environment }}.tfvars" \
+            -auto-approve
+        fi
+        
+    - name: 📤 Upload Terraform Plan
+      if: inputs.action == 'plan' || inputs.action == 'plan-destroy'
+      uses: actions/upload-artifact@v4
+      with:
+        name: terraform-plan-${{ inputs.environment }}-${{ inputs.infrastructure_scope }}
+        path: tfplan
+        retention-days: 30
+        
+    - name: 📊 Output Infrastructure Details
+      if: inputs.action == 'apply' && steps.plan.outcome == 'success'
+      run: |
+        echo "## 🎉 Deployment Successful!"
+        echo "**Environment:** ${{ inputs.environment }}"
+        echo "**Infrastructure:** ${{ inputs.infrastructure_scope }}"
+        echo ""
+        echo "### 📋 Resource Details:"
+        
+        if terraform output vpc_details > /dev/null 2>&1; then
+          echo "**VPC:** ✅ Deployed"
+        fi
+        
+        if terraform output gke_details > /dev/null 2>&1; then
+          echo "**GKE:** ✅ Deployed"
+          terraform output -raw kubectl_command
+        fi
+        
+        if terraform output cloudsql_details > /dev/null 2>&1; then
+          echo "**CloudSQL:** ✅ Deployed"
+        fi
+        
+    - name: 🔧 Setup kubectl
+      if: |
+        (inputs.infrastructure_scope == 'all' || inputs.infrastructure_scope == 'gke') && 
+        inputs.action == 'apply' && 
+        steps.plan.outcome == 'success'
+      run: |
+        eval "$(terraform output -raw kubectl_command)"
+        kubectl get nodes
+        
+    - name: 📱 Notify Success
+      if: success()
+      run: |
+        echo "✅ Infrastructure operation completed successfully!"
+        echo "Environment: ${{ inputs.environment }}"
+        echo "Action: ${{ inputs.action }}"
+        echo "Infrastructure: ${{ inputs.infrastructure_scope }}"
+        
+    - name: 📱 Notify Failure
+      if: failure()
+      run: |
+        echo "❌ Infrastructure operation failed!"
+        echo "Environment: ${{ inputs.environment }}"
+        echo "Action: ${{ inputs.action }}"
+        echo "Infrastructure: ${{ inputs.infrastructure_scope }}"
+
+# ---
+# # =============================================================================
+# # dev.tfvars
+# # =============================================================================
+
+# project_id      = "turnkey-guild-441104-f3"
+# region          = "us-central1"
+# zone            = "us-central1-a"
+# environment     = "dev"
+
+# # GKE Configuration
+# gke_num_nodes   = 1
+# gke_min_nodes   = 1
+# gke_max_nodes   = 3
+# gke_machine_type = "e2-medium"
+# gke_disk_size_gb = 100
+
+# # CloudSQL Configuration
+# sql_instance_name     = "chatbot-postgres-dev"
+# sql_database_version  = "POSTGRES_14"
+# sql_tier             = "db-f1-micro"
+# sql_disk_size        = 20
+# sql_database_name    = "chatbot_db"
+# sql_app_user         = "chatbot_app"
+# sql_deletion_protection = false
+# sql_backup_retention_days = 3
+
+# ---
+# # =============================================================================
+# # staging.tfvars
+# # =============================================================================
+
+# project_id      = "turnkey-guild-441104-f3"
+# region          = "us-central1"
+# zone            = "us-central1-a"
+# environment     = "staging"
+
+# # GKE Configuration
+# gke_num_nodes   = 2
+# gke_min_nodes   = 2
+# gke_max_nodes   = 5
+# gke_machine_type = "e2-standard-2"
+# gke_disk_size_gb = 100
+
+# # CloudSQL Configuration (won't deploy in staging)
+# sql_instance_name     = "chatbot-postgres-staging"
+# sql_database_version  = "POSTGRES_14"
+# sql_tier             = "db-g1-small"
+# sql_disk_size        = 50
+# sql_database_name    = "chatbot_db"
+# sql_app_user         = "chatbot_app"
+# sql_deletion_protection = true
+# sql_backup_retention_days = 7
+
+# ---
+# # =============================================================================
+# # prod.tfvars
+# # =============================================================================
+
+# project_id      = "turnkey-guild-441104-f3"
+# region          = "us-central1"
+# zone            = "us-central1-a"
+# environment     = "prod"
+
+# # GKE Configuration
+# gke_num_nodes   = 3
+# gke_min_nodes   = 3
+# gke_max_nodes   = 10
+# gke_machine_type = "e2-standard-4"
+# gke_disk_size_gb = 200
+
+# # CloudSQL Configuration (won't deploy in prod)
+# sql_instance_name     = "chatbot-postgres-prod"
+# sql_database_version  = "POSTGRES_14"
+# sql_tier             = "db-n1-standard-2"
+# sql_disk_size        = 100
+# sql_database_name    = "chatbot_db"
+# sql_app_user         = "chatbot_app"
+# sql_deletion_protection = true
+# sql_backup_retention_days = 30
