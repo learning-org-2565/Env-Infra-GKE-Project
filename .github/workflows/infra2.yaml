@@ -32,35 +32,43 @@ jobs:
         shell: bash
 
     steps:
-      - name: Checkout repository
+      - name: 📥 Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up Terraform
+      - name: 🔧 Set Up Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.8.2
 
-      - name: Set up Google Cloud authentication
+      - name: 🔐 Authenticate with GCP
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
 
-      - name: Set GCP Project
+      - name: 🌍 Set Environment Variables
         run: |
           echo "GOOGLE_CLOUD_PROJECT=${{ secrets.GCP_PROJECT_ID }}" >> $GITHUB_ENV
+          echo "TF_STATE_BUCKET=${{ secrets.TF_STATE_BUCKET }}" >> $GITHUB_ENV
 
-      - name: Terraform Init
+      - name: 🔧 Configure Terraform Backend
+        run: |
+          cat > backend-config.tfvars <<EOF
+          bucket = "${{ env.TF_STATE_BUCKET }}"
+          prefix = "terraform/state/${{ inputs.environment }}"
+          EOF
+
+      - name: 🏗️ Terraform Init
         if: inputs.action_type == 'init'
-        run: terraform init -backend-config="backend-configs/${{ inputs.environment }}.tfvars"
+        run: terraform init -backend-config=backend-config.tfvars
 
-      - name: Terraform Plan
+      - name: 🧪 Terraform Plan
         if: inputs.action_type == 'plan'
         run: terraform plan -var-file="terraform.tfvars" -input=false
 
-      - name: Terraform Apply
+      - name: 🚀 Terraform Apply
         if: inputs.action_type == 'apply'
         run: terraform apply -var-file="terraform.tfvars" -auto-approve
 
-      - name: Terraform Destroy
+      - name: 🔥 Terraform Destroy
         if: inputs.action_type == 'destroy'
         run: terraform destroy -var-file="terraform.tfvars" -auto-approve
