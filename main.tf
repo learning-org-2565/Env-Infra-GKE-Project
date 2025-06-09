@@ -18,7 +18,7 @@ locals {
 
 # VPC Module
 module "vpc" {
-  source = "./modules/vpc"
+  source = "./Modules/VPC"
 
   project_id          = var.project_id
   region              = var.region
@@ -34,7 +34,7 @@ module "vpc" {
 
 # GKE Module
 module "gke" {
-  source = "./modules/gke"
+  source = "./Modules/GKE"
 
   project_id       = var.project_id
   region           = var.region
@@ -69,18 +69,18 @@ module "gke" {
 
   labels = local.common_labels
 
-  depends_on = [module.vpc]
+  depends_on = [Modules.vpc]
 }
 
 # CloudSQL Module - Only for dev environment
 module "cloudsql" {
   count = local.deploy_cloudsql ? 1 : 0
 
-  source = "./modules/cloudsql"
+  source = "./Modules/cloudsql"
 
   project_id     = var.project_id
   region         = var.region
-  vpc_network_id = module.vpc.vpc_id
+  vpc_network_id = Modules.VPC.vpc_id
 
   # CloudSQL configuration
   sql_instance_name               = var.sql_instance_name
@@ -98,5 +98,5 @@ module "cloudsql" {
   sql_deletion_protection         = var.sql_deletion_protection
   sql_private_range_prefix_length = var.sql_private_range_prefix_length
 
-  depends_on = [module.vpc]
+  depends_on = [Modules.vpc]
 }
