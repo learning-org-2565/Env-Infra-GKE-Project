@@ -72,7 +72,7 @@ resource "google_container_cluster" "primary" {
   resource_labels = local.common_labels
 
   timeouts {
-    create = "33m"
+    create = "30m"
     update = "30m"
     delete = "30m"
   }
