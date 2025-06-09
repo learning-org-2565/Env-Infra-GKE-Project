@@ -58,8 +58,8 @@ jobs:
           EOF
 
       - name: 🏗️ Terraform Init
-        if: inputs.action_type == 'init'
         run: terraform init -backend-config=backend-config.tfvars
+
 
       - name: 🧪 Terraform Plan
         if: inputs.action_type == 'plan'
