@@ -1,10 +1,10 @@
-name: 🚀 Infrastructure Deployment2
+name: Terraform CI/CD
 
 on:
   workflow_dispatch:
     inputs:
       environment:
-        description: 'Target Environment'
+        description: 'Environment to deploy'
         required: true
         default: 'dev'
         type: choice
@@ -12,151 +12,55 @@ on:
           - dev
           - staging
           - prod
-
-      action:
-        description: 'Terraform Action'
+      action_type:
+        description: 'Terraform action to perform'
         required: true
         default: 'plan'
         type: choice
         options:
+          - init
           - plan
           - apply
           - destroy
-          - plan-destroy
-
-      infrastructure_scope:
-        description: 'Infrastructure to Deploy'
-        required: true
-        default: 'all'
-        type: choice
-        options:
-          - all
-          - vpc
-          - gke
-          - cloudsql
-
-env:
-  TF_VERSION: '1.6.0'
-  GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-  TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
-  TF_VAR_project_id: ${{ secrets.GCP_PROJECT_ID }}
-  TF_VAR_environment: ${{ inputs.environment }}
 
 jobs:
   terraform:
-    name: Terraform ${{ inputs.action }} - ${{ inputs.environment }}
     runs-on: ubuntu-latest
-    environment: ${{ inputs.environment }}
+
+    defaults:
+      run:
+        shell: bash
 
     steps:
-      - name: 📥 Checkout Code
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: 🔐 Setup GCP Authentication
-        uses: google-github-actions/auth@v2
-        with:
-          credentials_json: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
-
-      - name: ⚙️ Setup Terraform
+      - name: Set up Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: ${{ env.TF_VERSION }}
-          terraform_wrapper: false
+          terraform_version: 1.8.2
 
-      - name: 🔧 Configure Backend Config
-        run: |
-          cat > backend-config.tfvars <<EOF
-          bucket = "${{ env.TF_STATE_BUCKET }}"
-          prefix = "terraform/state/${{ inputs.environment }}"
-          EOF
-
-      - name: 🏗️ Terraform Init
-        run: terraform init -backend-config=backend-config.tfvars
-
-      - name: ✅ Terraform Validate
-        run: terraform validate
-
-      - name: 📋 Set Targets
-        id: targets
-        run: |
-          case "${{ inputs.infrastructure_scope }}" in
-            all)
-              echo "targets=" >> $GITHUB_OUTPUT
-              ;;
-            vpc)
-              echo "targets=-target=module.vpc" >> $GITHUB_OUTPUT
-              ;;
-            gke)
-              echo "targets=-target=module.vpc -target=module.gke" >> $GITHUB_OUTPUT
-              ;;
-            cloudsql)
-              echo "targets=-target=module.vpc -target=module.cloudsql" >> $GITHUB_OUTPUT
-              ;;
-          esac
-
-      - name: 📊 Terraform Plan
-        if: inputs.action == 'plan'
-        id: plan
-        run: |
-          terraform plan \
-            ${{ steps.targets.outputs.targets }} \
-            -var-file="${{ inputs.environment }}.tfvars" \
-            -out=tfplan \
-            -detailed-exitcode
-        continue-on-error: true
-
-      - name: ⚠️ Terraform Plan Failed
-        if: steps.plan.outcome == 'failure'
-        run: |
-          echo "❌ Terraform plan failed!"
-          exit 1
-
-      - name: 🚀 Terraform Apply
-        if: inputs.action == 'apply'
-        run: terraform apply -auto-approve tfplan
-
-      - name: 💥 Terraform Destroy
-        if: inputs.action == 'destroy' || inputs.action == 'plan-destroy'
-        run: |
-          if [[ "${{ inputs.action }}" == "plan-destroy" ]]; then
-            terraform plan -destroy \
-              ${{ steps.targets.outputs.targets }} \
-              -var-file="${{ inputs.environment }}.tfvars"
-          else
-            terraform destroy \
-              ${{ steps.targets.outputs.targets }} \
-              -var-file="${{ inputs.environment }}.tfvars" \
-              -auto-approve
-          fi
-
-      - name: 📤 Upload Terraform Plan
-        if: inputs.action == 'plan' || inputs.action == 'plan-destroy'
-        uses: actions/upload-artifact@v4
+      - name: Set up Google Cloud authentication
+        uses: google-github-actions/auth@v2
         with:
-          name: terraform-plan-${{ inputs.environment }}-${{ inputs.infrastructure_scope }}
-          path: tfplan
-          retention-days: 30
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-      - name: 📊 Output Terraform Resources
-        if: inputs.action == 'apply'
+      - name: Set GCP Project
         run: |
-          echo "## ✅ Apply completed for ${{ inputs.environment }}"
-          terraform output
+          echo "GOOGLE_CLOUD_PROJECT=${{ secrets.GCP_PROJECT_ID }}" >> $GITHUB_ENV
 
-      - name: 🔧 Setup kubectl (Optional)
-        if: |
-          (inputs.infrastructure_scope == 'all' || inputs.infrastructure_scope == 'gke') &&
-          inputs.action == 'apply'
-        run: |
-          eval "$(terraform output -raw kubectl_command)"
-          kubectl get nodes
+      - name: Terraform Init
+        if: inputs.action_type == 'init'
+        run: terraform init -backend-config="backend-configs/${{ inputs.environment }}.tfvars"
 
-      - name: ✅ Notify Success
-        if: success()
-        run: |
-          echo "✅ Success: ${{ inputs.action }} on ${{ inputs.environment }}"
+      - name: Terraform Plan
+        if: inputs.action_type == 'plan'
+        run: terraform plan -var-file="terraform.tfvars" -input=false
 
-      - name: ❌ Notify Failure
-        if: failure()
-        run: |
-          echo "❌ Failure: ${{ inputs.action }} on ${{ inputs.environment }}"
+      - name: Terraform Apply
+        if: inputs.action_type == 'apply'
+        run: terraform apply -var-file="terraform.tfvars" -auto-approve
+
+      - name: Terraform Destroy
+        if: inputs.action_type == 'destroy'
+        run: terraform destroy -var-file="terraform.tfvars" -auto-approve
