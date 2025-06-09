@@ -1,4 +1,4 @@
-name: 🚀 Infrastructure Deployment
+name: 🚀 Infrastructure Deployment2
 
 on:
   workflow_dispatch:
