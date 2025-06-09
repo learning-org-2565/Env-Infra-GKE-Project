@@ -39,7 +39,7 @@ Workload Identity is Google's recommended way to let your applications running i
 **Technical Definition:**
 Workload Identity allows Kubernetes Service Accounts (KSAs) to act as Google Service Accounts (GSAs), enabling pods to authenticate as a specific Google Service Account without storing any credentials.
 
-### The Two Types of Service Accounts
+### The Two Types of Service Accounts working 
 
 1. **Kubernetes Service Account (KSA)** 
    - Lives inside your Kubernetes cluster
