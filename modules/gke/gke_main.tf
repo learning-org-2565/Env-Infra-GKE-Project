@@ -21,7 +21,6 @@ resource "google_container_cluster" "primary" {
   node_locations = local.node_zones
 
   initial_node_count = var.gke_num_nodes
-  deletion_protection = false 
 
   node_config {
     service_account = var.service_account_email
