@@ -21,6 +21,7 @@ resource "google_container_cluster" "primary" {
   node_locations = local.node_zones
 
   initial_node_count = var.gke_num_nodes
+  deletion_protection = false 
 
   node_config {
     service_account = var.service_account_email
@@ -33,7 +34,6 @@ resource "google_container_cluster" "primary" {
     labels = local.common_labels
   }
 
-  remove_default_node_pool = true
 
   network    = var.vpc_network
   subnetwork = var.vpc_subnetwork
